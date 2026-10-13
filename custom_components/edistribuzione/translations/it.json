@@ -26,20 +26,29 @@
       }
     },
     "error": {
-      "invalid_auth": "Email o password non valide",
-      "cannot_connect": "Impossibile contattare E-Distribuzione",
+      "invalid_auth": "E-Distribuzione ha rifiutato email o password («{messaggio}»). Controlla di usare le credenziali dell'area clienti di E-Distribuzione, il distributore, e non quelle del tuo fornitore di energia (ad esempio Enel Energia): sono due account diversi. Se con le stesse credenziali accedi al sito ufficiale, riprova tra qualche minuto.",
+      "cannot_connect": "Home Assistant non riesce a raggiungere E-Distribuzione. Controlla la connessione a internet e il DNS di Home Assistant, poi riprova.",
       "invalid_otp": "Codice OTP errato o scaduto. Deve essere il codice inviato da questa configurazione: uno generato sul sito o nell'app appartiene a un'altra sessione di login e viene sempre rifiutato.",
       "otp_mancante": "Inserisci il codice OTP, oppure spunta \"Richiedi un nuovo codice\" per farne inviare uno nuovo",
       "troppe_sessioni": "E-Distribuzione ha rifiutato l'accesso perché l'account ha troppe sessioni aperte contemporaneamente. Esci dall'app ufficiale e dal sito, attendi qualche minuto e riprova: in questo stato nessun codice OTP viene inviato.",
       "nessun_pod_selezionato": "Seleziona almeno un POD",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere.",
+      "errore_tecnico_portale": "E-Distribuzione ha risposto con un errore tecnico generico («{messaggio}») invece di verificare le credenziali: non significa che email o password siano sbagliate. Di solito dipende da un disservizio del portale o da una limitazione degli accessi automatici. Riprova più tardi; se l'errore compare anche sul sito ufficiale, contatta l'assistenza di E-Distribuzione.",
+      "account_bloccato": "E-Distribuzione segnala che l'account è bloccato o disattivato («{messaggio}»). Accedi al sito ufficiale per sbloccarlo, ad esempio reimpostando la password, poi riprova qui.",
+      "password_scaduta": "E-Distribuzione segnala che la password è scaduta («{messaggio}»). Cambiala sul sito ufficiale, poi accedi qui con quella nuova.",
+      "login_rifiutato": "E-Distribuzione ha rifiutato l'accesso con questo messaggio: «{messaggio}». Se non è chiaro cosa fare, apri una segnalazione su GitHub riportando il messaggio.",
+      "app_bloccata": "E-Distribuzione sta rifiutando il client dell'app ufficiale che l'integrazione usa per accedere (risposta «app_blocked»). Non dipende dalle tue credenziali e insistere ora non serve: riprova più tardi.",
+      "risposta_inattesa": "E-Distribuzione ha risposto in modo inatteso durante l'accesso ({messaggio}). Non dipende dalle tue credenziali: il portale potrebbe essere in manutenzione o essere cambiato. Riprova più tardi; se continua, apri una segnalazione su GitHub allegando il log.",
+      "errore_imprevisto": "Errore imprevisto durante l'accesso ({messaggio}). I dettagli sono nel log di Home Assistant: riprova, e se si ripete apri una segnalazione su GitHub allegandolo.",
+      "otp_formato": "Il codice OTP è fatto solo di cifre: controlla di averlo copiato per intero, senza lettere."
     },
     "abort": {
       "reauth_successful": "Credenziali aggiornate con successo",
       "no_pods_found": "Nessun POD trovato per questo account",
       "supplies_failed": "Errore imprevisto nel recupero dei POD dall'account. Riprova la configurazione da capo (login + OTP inclusi).",
       "otp_exchange_failed": "Il codice OTP è stato accettato ma il completamento dell'accesso è fallito. Riprova la configurazione da capo (login + OTP inclusi).",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere.",
+      "app_bloccata": "Dopo il codice OTP E-Distribuzione ha rifiutato il client dell'app ufficiale che l'integrazione usa per accedere (risposta «app_blocked»). Non dipende dalle tue credenziali né dal codice: riprova la configurazione più tardi."
     }
   },
   "options": {
@@ -86,9 +95,11 @@
       "nessun_pod": "Non ci sono POD configurati da rimuovere",
       "nessun_pod_selezionato": "Seleziona almeno un POD da aggiungere",
       "nessun_pod_da_aggiungere": "Tutti i POD del tuo account sono già configurati qui",
-      "refresh_failed": "Non è stato possibile rinnovare l'accesso a E-Distribuzione. Riprova più tardi; se il problema persiste potrebbe servire un nuovo login (rimuovi e riconfigura l'integrazione).",
+      "refresh_failed": "Non è stato possibile rinnovare l'accesso a E-Distribuzione ({errore}). Riprova più tardi.",
       "supplies_failed": "Errore imprevisto nel recupero dei POD dall'account. Riprova più tardi.",
-      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere."
+      "accesso_bloccato": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot, quindi l'integrazione non riesce ad accedere. Non dipende dalle tue credenziali: riprova più tardi, senza insistere.",
+      "app_bloccata": "E-Distribuzione sta rifiutando il client dell'app ufficiale che l'integrazione usa per accedere (risposta «app_blocked»). Non dipende dalle tue credenziali: riprova più tardi.",
+      "accesso_scaduto": "L'accesso a E-Distribuzione è scaduto. Accedi di nuovo dalla notifica in Impostazioni > Dispositivi e servizi: POD, opzioni e storico restano."
     }
   },
   "entity": {
@@ -98,6 +109,27 @@
         "state_attributes": {
           "pods": {
             "name": "POD"
+          }
+        }
+      },
+      "fascia_corrente": {
+        "name": "Fascia oraria corrente",
+        "state": {
+          "f1": "F1",
+          "f2": "F2",
+          "f3": "F3"
+        },
+        "state_attributes": {
+          "prossima_fascia": {
+            "name": "Prossima fascia",
+            "state": {
+              "f1": "F1",
+              "f2": "F2",
+              "f3": "F3"
+            }
+          },
+          "prossimo_cambio": {
+            "name": "Prossimo cambio"
           }
         }
       },
@@ -157,11 +189,11 @@
         },
         "data_da": {
           "name": "Data inizio",
-          "description": "Primo giorno del periodo da recuperare."
+          "description": "Primo giorno del periodo da recuperare, come anno-mese-giorno (ad esempio 2026-08-01)."
         },
         "data_a": {
           "name": "Data fine",
-          "description": "Ultimo giorno del periodo da recuperare. I dati sono disponibili con un giorno di ritardo, quindi al massimo ieri."
+          "description": "Ultimo giorno del periodo da recuperare, come anno-mese-giorno. I dati sono disponibili con un giorno di ritardo, quindi al massimo ieri."
         }
       }
     },
@@ -172,10 +204,10 @@
   },
   "exceptions": {
     "dispositivo_non_trovato": {
-      "message": "Dispositivo non trovato (device_id={device_id})."
+      "message": "Nessun dispositivo con ID «{device_id}». Sceglilo dal menu in modalità interfaccia, oppure copia l'ID dall'indirizzo della pagina del dispositivo, dopo /config/devices/device/. Dispositivi E-Distribuzione: {disponibili}."
     },
     "dispositivo_senza_configurazione": {
-      "message": "Il dispositivo selezionato non appartiene a nessuna configurazione attiva."
+      "message": "La configurazione E-Distribuzione del dispositivo «{nome}» non è attiva: di solito il suo ultimo avvio non è riuscito ad accedere a E-Distribuzione. Controlla Impostazioni > Dispositivi e servizi > E-Distribuzione: lì trovi il motivo e, se serve, il pulsante per accedere di nuovo."
     },
     "nessuna_istanza": {
       "message": "Nessuna istanza E-Distribuzione configurata."
@@ -184,31 +216,77 @@
       "message": "Il POD '{pod}' non è configurato su questa istanza. POD configurati: {pods}."
     },
     "date_invertite": {
-      "message": "La data di inizio ({data_da}) è successiva a quella di fine ({data_a})."
+      "message": "La data di inizio ({data_da}) è successiva alla data di fine ({data_a}): probabilmente le hai invertite. Usa data_da: \"{data_a}\" e data_a: \"{data_da}\"."
     },
     "data_fine_troppo_recente": {
-      "message": "La data di fine ({data_a}) è troppo recente: al momento si assume che i dati siano disponibili con almeno un giorno di ritardo, quindi al massimo fino al {ultimo_utile}."
+      "message": "La data di fine ({data_a}) è troppo recente: E-Distribuzione pubblica i dati con un giorno di ritardo, quindi oggi puoi arrivare al massimo al {ultimo_utile}. Usa data_a: \"{ultimo_utile}\"."
     },
     "intervallo_troppo_ampio": {
-      "message": "Intervallo di {giorni} giorni troppo ampio per una singola richiesta (limite di cortesia: {massimo} giorni, circa 6 mesi). Ripeti l'azione su periodi più corti."
+      "message": "Il periodo dal {data_da} al {data_a} è di {giorni} giorni: una singola esecuzione ne copre al massimo {massimo} (circa 6 mesi). Dividilo in più esecuzioni, la prima ad esempio dal {data_da} al {fine_prima_parte}."
     },
     "nessun_dato_importato": {
       "message": "Nessun dato importato per il periodo {data_da} - {data_a}. {dettagli}"
     },
     "refresh_token_fallito": {
-      "message": "Refresh del token fallito: {errore}"
+      "message": "Non è stato possibile rinnovare l'accesso a E-Distribuzione ({errore}). L'integrazione riprova da sola al prossimo aggiornamento."
     },
     "errore_import_pod": {
-      "message": "Errore importando il periodo per il POD {pod}: {errore}"
+      "message": "Il POD {pod} non è stato aggiornato: {errore}. I giorni mancanti vengono richiesti di nuovo al prossimo aggiornamento."
     },
     "accesso_bloccato": {
       "message": "E-Distribuzione al momento blocca l'accesso automatico con una verifica antibot. I consumi riprendono ad aggiornarsi appena l'accesso torna disponibile."
+    },
+    "dispositivo_mancante": {
+      "message": "Scegli il dispositivo (campo device_id). Dispositivi E-Distribuzione: {disponibili}."
+    },
+    "un_solo_dispositivo": {
+      "message": "Scegli un solo dispositivo: quello «E-Distribuzione» recupera già tutti i POD della configurazione. Dispositivi E-Distribuzione: {disponibili}."
+    },
+    "dispositivo_e_un_entita": {
+      "message": "«{device_id}» è l'ID di un'entità, non di un dispositivo. Usa l'ID del dispositivo: {disponibili}."
+    },
+    "dispositivo_e_un_pod": {
+      "message": "«{valore}» è il codice del POD, non l'ID del dispositivo. Per questo POD usa device_id: {device_id}"
+    },
+    "dispositivo_altra_integrazione": {
+      "message": "Il dispositivo «{nome}» non appartiene all'integrazione E-Distribuzione. Dispositivi E-Distribuzione: {disponibili}."
+    },
+    "campo_sconosciuto": {
+      "message": "Campo sconosciuto: {campi}. L'azione accetta solo device_id, data_da (data di inizio) e data_a (data di fine)."
+    },
+    "data_da_mancante": {
+      "message": "Manca la data di inizio (campo data_da)."
+    },
+    "data_a_mancante": {
+      "message": "Manca la data di fine (campo data_a)."
+    },
+    "data_da_non_valida": {
+      "message": "La data di inizio (data_da) «{valore}» non è valida. Scrivila come anno-mese-giorno, ad esempio data_da: \"{esempio}\"."
+    },
+    "data_a_non_valida": {
+      "message": "La data di fine (data_a) «{valore}» non è valida. Scrivila come anno-mese-giorno, ad esempio data_a: \"{esempio}\"."
+    },
+    "data_inizio_troppo_recente": {
+      "message": "La data di inizio ({data_da}) è troppo recente: E-Distribuzione pubblica i dati con un giorno di ritardo, quindi oggi l'ultimo giorno disponibile è il {ultimo_utile}."
+    },
+    "portale_non_raggiungibile": {
+      "message": "Home Assistant non riesce a raggiungere E-Distribuzione per rinnovare l'accesso ({errore}). Controlla la connessione a internet; l'integrazione riprova da sola al prossimo aggiornamento."
+    },
+    "app_bloccata": {
+      "message": "E-Distribuzione sta rifiutando il client dell'app ufficiale che l'integrazione usa per accedere (risposta «app_blocked»), quindi l'accesso non si rinnova. Non dipende dalle tue credenziali: l'integrazione riprova da sola ogni ora."
+    },
+    "accesso_scaduto": {
+      "message": "L'accesso a E-Distribuzione è scaduto o è stato revocato (ad esempio dopo un cambio password). Accedi di nuovo dalla notifica in Impostazioni > Dispositivi e servizi: POD, opzioni e storico restano."
     }
   },
   "issues": {
     "accesso_bloccato": {
       "title": "E-Distribuzione blocca l'accesso automatico",
-      "description": "E-Distribuzione risponde con una verifica antibot invece di concedere l'accesso, quindi l'integrazione non riesce a rinnovarlo e i consumi non si aggiornano. Non dipende dalla tua configurazione né dalle credenziali, e i dati già importati restano. L'integrazione riprova da sola ogni ora e questo avviso sparisce appena l'accesso torna disponibile."
+      "description": "E-Distribuzione risponde con una verifica antibot invece di concedere l'accesso, quindi l'integrazione non riesce a rinnovarlo e i consumi non si aggiornano. Non dipende dalla tua configurazione né dalle credenziali, e i dati già importati restano. Non rimuovere l'integrazione per configurarla di nuovo: finché il blocco dura, anche il nuovo accesso viene rifiutato. L'integrazione riprova da sola ogni ora e questo avviso sparisce appena l'accesso torna disponibile."
+    },
+    "app_bloccata": {
+      "title": "E-Distribuzione rifiuta l'accesso dell'integrazione",
+      "description": "E-Distribuzione risponde «app_blocked» al rinnovo dell'accesso: una sua regola di sicurezza sta rifiutando il client dell'app ufficiale che l'integrazione usa. Non dipende dalla tua configurazione né dalle credenziali, e i dati già importati restano. Non rimuovere l'integrazione per configurarla di nuovo: anche il nuovo accesso passa dallo stesso client e verrebbe rifiutato. L'integrazione riprova da sola ogni ora e questo avviso sparisce appena l'accesso torna disponibile."
     }
   }
 }

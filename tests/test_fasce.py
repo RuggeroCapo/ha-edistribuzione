@@ -1,8 +1,7 @@
-"""Test della classificazione per fasce ARERA (fasce.py).
+"""Classification by ARERA time band (fasce.py).
 
-Modulo puro: nessun fixture 'hass', nessun Recorder. I campioni sono
-costruiti come li restituisce raw_storage.leggi_campioni, cioè
-(inizio_intervallo_utc_aware, kwh).
+Pure module: no 'hass' fixture, no Recorder. The samples are built as
+raw_storage.leggi_campioni returns them, i.e. (utc_aware_interval_start, kwh).
 """
 from __future__ import annotations
 
@@ -15,13 +14,13 @@ from custom_components.edistribuzione.fasce import F1, F2, F3, FUSO_ITALIA
 
 
 def _locale(iso: str) -> datetime:
-    """Istante in ora italiana, es. '2026-10-07 08:00'."""
+    """Instant in Italian time, e.g. '2026-10-07 08:00'."""
     return datetime.fromisoformat(iso).replace(tzinfo=FUSO_ITALIA)
 
 
 def _giornata(giorno: date, kwh_per_campione: float = 0.25) -> list[tuple[datetime, float]]:
-    """Tutti i campioni a 15' di un giorno LOCALE, in UTC: 96 normalmente,
-    92 o 100 nei giorni di cambio d'ora (come li restituisce l'API)."""
+    """All the 15-minute samples of a LOCAL day, in UTC: 96 normally, 92 or
+    100 on the days of the clock change (as the API returns them)."""
     inizio = datetime(giorno.year, giorno.month, giorno.day, tzinfo=FUSO_ITALIA).astimezone(UTC)
     fine = datetime.combine(giorno + timedelta(days=1), datetime.min.time(), FUSO_ITALIA).astimezone(UTC)
     campioni = []
@@ -36,7 +35,7 @@ def _totali(per_fascia: dict[str, list[tuple[datetime, float]]]) -> dict[str, fl
     return {f: round(sum(kwh for _, kwh in ore), 6) for f, ore in per_fascia.items()}
 
 
-# --- Pasqua e festività -------------------------------------------------------
+# --- Easter and holidays ------------------------------------------------------
 
 @pytest.mark.parametrize(
     ("anno", "attesa"),
@@ -45,8 +44,8 @@ def _totali(per_fascia: dict[str, list[tuple[datetime, float]]]) -> dict[str, fl
         (2025, date(2025, 4, 20)),
         (2026, date(2026, 4, 5)),
         (2027, date(2027, 3, 28)),
-        (2038, date(2038, 4, 25)),  # la più tardiva possibile
-        (2285, date(2285, 3, 22)),  # la più precoce possibile
+        (2038, date(2038, 4, 25)),  # the latest possible
+        (2285, date(2285, 3, 22)),  # the earliest possible
     ],
 )
 def test_pasqua(anno, attesa):
@@ -55,17 +54,17 @@ def test_pasqua(anno, attesa):
 
 def test_festivita_2026_comprende_pasquetta_e_le_fisse():
     giorni = fasce.festivita(2026)
-    assert date(2026, 4, 6) in giorni  # Lunedì dell'Angelo
+    assert date(2026, 4, 6) in giorni  # Easter Monday
     for mese, giorno in ((1, 1), (1, 6), (4, 25), (5, 1), (6, 2), (8, 15), (11, 1), (12, 8), (12, 25), (12, 26)):
         assert date(2026, mese, giorno) in giorni
 
 
 def test_i_patroni_locali_non_sono_festivi():
-    # Sant'Ambrogio (Milano), martedì 7/12/2027: giorno feriale per ARERA.
+    # Sant'Ambrogio (Milan), Tuesday 7/12/2027: a working day for ARERA.
     assert fasce.fascia(_locale("2027-12-07 10:00")) == F1
 
 
-# --- Fasce in un giorno feriale ----------------------------------------------
+# --- Bands on a working day -------------------------------------------------
 
 @pytest.mark.parametrize(
     ("ora", "attesa"),
@@ -84,7 +83,7 @@ def test_i_patroni_locali_non_sono_festivi():
     ],
 )
 def test_confini_feriale(ora, attesa):
-    # Mercoledì 7 ottobre 2026
+    # Wednesday October 7, 2026
     assert fasce.fascia(_locale(f"2026-10-07 {ora}")) == attesa
 
 
@@ -104,9 +103,9 @@ def test_domenica_sempre_f3(ora):
 @pytest.mark.parametrize(
     "giorno",
     [
-        "2026-04-06",  # Pasquetta (lunedì)
-        "2026-06-02",  # Festa della Repubblica (martedì)
-        "2026-12-08",  # Immacolata (martedì)
+        "2026-04-06",  # Easter Monday
+        "2026-06-02",  # Republic Day (Tuesday)
+        "2026-12-08",  # Immaculate Conception (Tuesday)
     ],
 )
 def test_festivo_infrasettimanale_tutto_f3(giorno):
@@ -115,11 +114,11 @@ def test_festivo_infrasettimanale_tutto_f3(giorno):
 
 
 def test_festivo_di_sabato_tutto_f3():
-    # Sabato 25 aprile 2026: senza la festività sarebbe F2 dalle 7 alle 23.
+    # Saturday April 25, 2026: without the holiday it would be F2 from 7 to 23.
     assert fasce.fascia(_locale("2026-04-25 12:00")) == F3
 
 
-# --- San Francesco (4 ottobre) ----------------------------------------------
+# --- San Francesco (October 4) ---------------------------------------------
 
 def test_san_francesco_2027_festivo_di_default():
     assert fasce.fascia(_locale("2027-10-04 10:00")) == F3
@@ -131,11 +130,11 @@ def test_san_francesco_disattivabile(monkeypatch):
 
 
 def test_san_francesco_non_retroattivo():
-    # Lunedì 4 ottobre 2021: prima della L. 151/2025 era un giorno feriale.
+    # Monday October 4, 2021: before Law 151/2025 it was a working day.
     assert fasce.fascia(_locale("2021-10-04 10:00")) == F1
 
 
-# --- Fuso orario ---------------------------------------------------------------
+# --- Time zone ----------------------------------------------------------------
 
 def test_input_utc_convertito_in_ora_legale_estiva():
     # 06:00 UTC = 08:00 CEST
@@ -154,11 +153,11 @@ def test_datetime_naive_rifiutato():
         fasce.fascia(datetime(2026, 10, 7, 10, 0))
 
 
-# --- Aggregazione oraria per fascia ------------------------------------------
+# --- Hourly aggregation per band ---------------------------------------------
 
 def test_giornata_feriale_intera():
     risultato = fasce.aggrega_ore_per_fascia(_giornata(date(2026, 10, 7)))
-    # 1 kWh/ora: F1 = 8-19 (11 h), F2 = 7-8 + 19-23 (5 h), F3 = 0-7 + 23-24 (8 h)
+    # 1 kWh/hour: F1 = 8-19 (11 h), F2 = 7-8 + 19-23 (5 h), F3 = 0-7 + 23-24 (8 h)
     assert _totali(risultato) == {F1: 11.0, F2: 5.0, F3: 8.0}
 
 
@@ -168,7 +167,7 @@ def test_sabato_intero():
 
 
 def test_le_tre_serie_hanno_gli_stessi_timestamp_e_sommano_al_totale():
-    campioni = _giornata(date(2026, 10, 9)) + _giornata(date(2026, 10, 10))  # ven + sab
+    campioni = _giornata(date(2026, 10, 9)) + _giornata(date(2026, 10, 10))  # Fri + Sat
     risultato = fasce.aggrega_ore_per_fascia(campioni)
 
     timestamp = [[ora for ora, _ in risultato[f]] for f in fasce.FASCE]
@@ -178,15 +177,15 @@ def test_le_tre_serie_hanno_gli_stessi_timestamp_e_sommano_al_totale():
 
     for i in range(48):
         assert sum(risultato[f][i][1] for f in fasce.FASCE) == pytest.approx(1.0)
-        # ogni ora appartiene a una sola fascia
+        # every hour belongs to a single band
         assert sum(1 for f in fasce.FASCE if risultato[f][i][1] > 0) == 1
 
 
 @pytest.mark.parametrize(
     ("giorno", "ore_attese"),
     [
-        (date(2026, 3, 29), 23),   # passaggio all'ora legale
-        (date(2026, 10, 25), 25),  # ritorno all'ora solare
+        (date(2026, 3, 29), 23),   # start of daylight saving time
+        (date(2026, 10, 25), 25),  # back to standard time
     ],
 )
 def test_cambio_ora_cade_di_domenica_tutto_f3(giorno, ore_attese):
@@ -199,3 +198,38 @@ def test_cambio_ora_cade_di_domenica_tutto_f3(giorno, ore_attese):
 
 def test_lista_vuota():
     assert fasce.aggrega_ore_per_fascia([]) == {F1: [], F2: [], F3: []}
+
+
+class TestProssimoCambio:
+    """Used by the current time band sensor to know when to update: the
+    first instant after 'now' in which the band changes."""
+
+    @pytest.mark.parametrize(
+        ("adesso", "cambio", "fascia_dopo"),
+        [
+            # Monday: F2 -> F1 at 8, F1 -> F2 at 19, F2 -> F3 at 23.
+            ("2026-10-12 07:30", "2026-10-12 08:00", F1),
+            ("2026-10-12 08:00", "2026-10-12 19:00", F2),
+            ("2026-10-12 22:59", "2026-10-12 23:00", F3),
+            # Saturday evening: F3 until Monday at 7, the whole Sunday included.
+            ("2026-10-17 23:00", "2026-10-19 07:00", F2),
+            # Christmas 2026 is a Friday, Santo Stefano a Saturday: F3 from Thursday
+            # at 23 to Monday 28 at 7.
+            ("2026-12-24 23:30", "2026-12-28 07:00", F2),
+        ],
+    )
+    def test_confini(self, adesso, cambio, fascia_dopo):
+        risultato = fasce.prossimo_cambio(_locale(adesso))
+        assert risultato == _locale(cambio)
+        assert fasce.fascia(risultato) == fascia_dopo
+
+    def test_attraversa_il_cambio_dell_ora(self):
+        """Sunday March 28, 2027 is Easter and daylight saving time starts;
+        Monday is Easter Monday, all F3. The boundary comes on Tuesday at 7
+        Italian time, i.e. at 5 UTC instead of 6."""
+        risultato = fasce.prossimo_cambio(_locale("2027-03-27 23:30"))
+        assert risultato == _locale("2027-03-30 07:00")
+        assert risultato.astimezone(UTC).hour == 5
+
+    def test_risultato_in_utc(self):
+        assert fasce.prossimo_cambio(_locale("2026-10-12 07:30")).tzinfo is UTC

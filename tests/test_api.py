@@ -1,14 +1,14 @@
-"""Test per api.py: costruzione header e parsing delle risposte, nessuna
-chiamata di rete reale.
+"""api.py: building the headers and parsing the responses, with no real
+network call.
 
-Come tests/test_auth.py, api.py non dipende da Home Assistant, ma viene
-comunque caricato via importlib bypassando __init__.py (che lo fa).
+Like tests/test_auth.py: api.py does not depend on Home Assistant, but it is
+loaded through importlib anyway, bypassing __init__.py (which does).
 
-I payload di successo usati come fixture NON sono inventati: sono risposte
-reali osservate testando il protocollo (2 POD veri via async_get_supplies,
-una curva di carico giornaliera reale via async_get_daily_load_profile) -
-anonimizzati sostituendo indirizzo e codice fiscale con valori di fantasia,
-la struttura è quella vera.
+The successful payloads used as fixtures are NOT made up: they are real
+responses seen while testing the protocol (2 real PODs via async_get_supplies,
+a real daily load curve via async_get_daily_load_profile) - anonymised by
+replacing address and tax code with made-up values, the structure is the real
+one.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from unittest.mock import Mock
 
 import aiohttp
 import pytest
@@ -48,7 +49,7 @@ api = _load_api_module()
 
 
 # ---------------------------------------------------------------------------
-# Infrastruttura minima per simulare le risposte
+# Minimal infrastructure to simulate the responses
 # ---------------------------------------------------------------------------
 
 
@@ -83,8 +84,8 @@ class _Risposta:
 
 
 class _Sessione:
-    """Route per URL: {frammento_url: (status, corpo)}. Registra anche i
-    params dell'ultima GET, per verificare cosa viene mandato (es. magnitude)."""
+    """Routes by URL: {url_fragment: (status, body)}. Also records the params
+    of the last GET, to check what is sent (e.g. magnitude)."""
 
     def __init__(self, rotte: dict[str, tuple[int, object]]):
         self._rotte = rotte
@@ -219,9 +220,9 @@ PAYLOAD_CURVA_REALE = {
     ]
 }
 
-# Confermato con un test reale su un intervallo VERO (rangeDateFrom !=
-# rangeDateTo): l'endpoint ha davvero restituito tutti i giorni richiesti in
-# un'unica risposta (fino a 181 testati, qui solo 3 per brevità).
+# Confirmed with a real test on a REAL range (rangeDateFrom != rangeDateTo):
+# the endpoint really returned all the requested days in a single response (up
+# to 181 tested, only 3 here for brevity).
 PAYLOAD_CURVA_MULTIGIORNO_REALE = {
     "data": [
         {
@@ -251,8 +252,8 @@ PAYLOAD_CURVA_MULTIGIORNO_REALE = {
 
 class TestAsyncGetDailyLoadProfile:
     async def test_intervallo_vero_ritorna_piu_giorni(self):
-        """Non va assunto che serva un ciclo giorno per giorno: un intervallo
-        vero restituisce più giorni in un'unica risposta."""
+        """No day-by-day loop must be assumed: a real range returns several
+        days in a single response."""
         client, _ = _client({"querydailyloadprofile": (200, PAYLOAD_CURVA_MULTIGIORNO_REALE)})
         curva = await client.async_get_daily_load_profile(
             "IT001E12345678", datetime.date(2026, 1, 1), datetime.date(2026, 1, 3)
@@ -269,17 +270,42 @@ class TestAsyncGetDailyLoadProfile:
         assert len(curva[0]["readings"]["sampleValues"]) == 4
 
     async def test_404_e_trattato_come_nessun_dato_non_come_errore(self):
-        """Il backend risponde 404 (non 200 con data:[] vuoto) quando i dati
-        del giorno richiesto non sono ancora pubblicati: va trattato come
-        'nessun dato ancora', non come errore fatale."""
+        """The backend answers 404 (not 200 with an empty data:[]) when the
+        requested day's data is not published yet: it must be treated as "no
+        data yet", not as a fatal error."""
         client, _ = _client({"querydailyloadprofile": (404, "")})
         curva = await client.async_get_daily_load_profile("IT001E12345678", datetime.date(2026, 8, 20))
         assert curva == []
 
     async def test_401_solleva_errore_specifico(self):
         client, _ = _client({"querydailyloadprofile": (401, {})})
-        with pytest.raises(api.ApiError, match="401"):
+        with pytest.raises(api.ApiError, match="401") as errore:
             await client.async_get_daily_load_profile("IT001E12345678", datetime.date(2026, 8, 1))
+        assert errore.value.status == 401
+
+    async def test_errore_del_server_e_un_api_error_con_lo_status(self):
+        """A 5xx used to come out as ClientResponseError: the action did not
+        catch it and showed an unknown error, and the polling cycle did not
+        queue the days."""
+        client, _ = _client({"querydailyloadprofile": (503, {"meta": {"status": "KO"}})})
+        with pytest.raises(api.ApiError) as errore:
+            await client.async_get_daily_load_profile("IT001E12345678", datetime.date(2026, 8, 1))
+        assert errore.value.status == 503
+        assert not errore.value.rete
+
+    async def test_errore_di_rete_e_un_api_error(self):
+        client, sessione = _client_e_sessione({})
+
+        def _get_fallisce(url, headers=None, params=None):
+            raise aiohttp.ClientConnectorDNSError(
+                Mock(host="xs-misura-p.de-c1.eu1.cloudhub.io", port=443), OSError("dns")
+            )
+
+        sessione.get = _get_fallisce
+        with pytest.raises(api.ApiError) as errore:
+            await client.async_get_daily_load_profile("IT001E12345678", datetime.date(2026, 8, 1))
+        assert errore.value.rete
+        assert errore.value.status is None
 
     async def test_meta_status_ko_solleva_errore(self):
         client, _ = _client(
@@ -301,14 +327,14 @@ class TestAsyncGetDailyLoadProfile:
         assert len(curva) == 1
 
     async def test_meta_assente_e_trattato_come_ok(self):
-        """Il payload reale osservato non ha affatto una chiave 'meta': deve
-        passare comunque (meta.status is None -> considerato OK)."""
+        """The real payload observed has no 'meta' key at all: it must pass
+        anyway (meta.status is None -> considered OK)."""
         client, _ = _client({"querydailyloadprofile": (200, PAYLOAD_CURVA_REALE)})
         curva = await client.async_get_daily_load_profile("IT001E12345678", datetime.date(2026, 8, 1))
         assert curva == PAYLOAD_CURVA_REALE["data"]
 
     async def test_date_to_omesso_richiede_un_solo_giorno(self):
-        """Senza date_to, un solo giorno (rangeDateFrom == rangeDateTo)."""
+        """Without date_to, a single day (rangeDateFrom == rangeDateTo)."""
         client, sessione = _client_e_sessione({"querydailyloadprofile": (200, PAYLOAD_CURVA_REALE)})
         await client.async_get_daily_load_profile("IT001E12345678", datetime.date(2026, 8, 1))
         assert sessione.ultimi_params["rangeDateFrom"] == sessione.ultimi_params["rangeDateTo"]
@@ -322,9 +348,9 @@ class TestAsyncGetDailyLoadProfile:
 
 
 # ---------------------------------------------------------------------------
-# magnitude: deve finire nei params col valore passato dal chiamante
-# (è quello che permette al coordinator di chiedere sia la prelevata che
-# l'immessa con la stessa funzione, senza nessuna modifica qui).
+# magnitude: it must end up in the params with the caller's value (this is
+# what lets the coordinator request both consumption and injection with the
+# same function, without any change here).
 # ---------------------------------------------------------------------------
 
 
@@ -342,9 +368,9 @@ class TestMagnitudeParametro:
         assert sessione.ultimi_params["magnitude"] == "A2"
 
     async def test_due_chiamate_con_magnitude_diverse_sono_indipendenti(self):
-        """Il coordinator chiama questa funzione due volte, una per
-        direzione: verifica che non ci sia stato condiviso tra le chiamate
-        che faccia trapelare la prima magnitude nella seconda."""
+        """The coordinator calls this function twice, once per direction:
+        checks that no state shared between the calls leaks the first
+        magnitude into the second."""
         client, sessione = _client_e_sessione({"querydailyloadprofile": (200, PAYLOAD_CURVA_REALE)})
         await client.async_get_daily_load_profile(
             "IT001E12345678", datetime.date(2026, 8, 1), magnitude="A1"

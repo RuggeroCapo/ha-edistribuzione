@@ -30,7 +30,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
-    """Raised when the API returns a non-OK meta.status or a transport error."""
+    """Raised when the API returns a non-OK meta.status or a transport error.
+
+    'status' is the HTTP status when the server answered with an error, 'rete'
+    is True when it could not be reached at all: the coordinator turns them
+    into a sentence the user can act on.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, rete: bool = False) -> None:
+        super().__init__(message)
+        self.status = status
+        self.rete = rete
 
 
 class ApiClient:
@@ -57,11 +67,19 @@ class ApiClient:
         }
 
     async def _get_json(self, url: str, method_user: str, params: dict) -> dict:
+        try:
+            return await self._get_json_grezzo(url, method_user, params)
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise ApiError(f"{type(err).__name__} chiamando {url}: {err}", rete=True) from err
+        except ValueError as err:
+            raise ApiError(f"Risposta non JSON da {url}: {err}") from err
+
+    async def _get_json_grezzo(self, url: str, method_user: str, params: dict) -> dict:
         async with self._session.get(
             url, headers=self._headers(method_user), params=params
         ) as resp:
             if resp.status == 401:
-                raise ApiError("401 Unauthorized - access_token scaduto")
+                raise ApiError("401 Unauthorized - access_token scaduto", status=401)
             if resp.status == 404:
                 # The backend returns 404 for a day whose data is not published
                 # yet, instead of a 200 with an empty data:[] as for other
@@ -83,7 +101,7 @@ class ApiClient:
                     resp.status,
                     body_preview[:500],
                 )
-            resp.raise_for_status()
+                raise ApiError(f"HTTP {resp.status} da {url}", status=resp.status)
             payload = await resp.json(content_type=None)
 
         meta = payload.get("meta", {})

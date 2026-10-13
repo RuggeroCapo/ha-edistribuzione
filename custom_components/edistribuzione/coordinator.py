@@ -23,16 +23,22 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 
+import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from . import raw_storage
 from .api import ApiClient, ApiError
-from .auth import AccessoBloccato, AuthClient, AuthError
+from .auth import AccessoBloccato, AppBloccata, AuthClient, AuthError, TokenNonValido
 from .const import (
     ABBANDONO_CODA_DOPO_GIORNI,
     CONF_DATA_INSTALLAZIONE,
@@ -45,6 +51,7 @@ from .const import (
     DOMAIN,
     GIORNI_RICONTROLLO,
     ISSUE_ACCESSO_BLOCCATO,
+    ISSUE_APP_BLOCCATA,
     MAGNITUDE_IMMESSA,
     MAGNITUDE_PRELEVATA,
     MAGNITUDE_TUTTE,
@@ -55,6 +62,7 @@ from .const import (
     TIPO_POD_DEFAULT,
     TIPO_POD_PRODUZIONE,
 )
+from .fasce import FUSO_ITALIA
 from .statistics import async_get_ultima_data_disponibile, async_import_curva_giornaliera
 from .testi import testo
 
@@ -86,16 +94,6 @@ def _giorni_ricevuti(curva: list[dict]) -> set[date]:
     return giorni
 
 
-def _kwh_del_giorno(curva: list[dict], giorno: date) -> float | None:
-    """Total kWh of a single day inside a multi-day response."""
-    atteso = giorno.strftime("%Y%m%d")
-    for elemento in curva:
-        readings = elemento.get("readings", {})
-        if readings.get("sampleDate") == atteso:
-            return sum(float(c.get("val", 0)) for c in readings.get("sampleValues", []))
-    return None
-
-
 def _curva_ha_dati(curva: list[dict]) -> bool:
     """True if the async_get_daily_load_profile response really contains
     samples, not just an empty structure."""
@@ -122,6 +120,44 @@ def _magnitude_onorata(curva: list[dict], magnitude_richiesta: str) -> bool:
     return True
 
 
+def _riepilogo_pod(
+    ultima_data: date | None, ultimi_giorni: dict[str, tuple[date, float] | None]
+) -> dict:
+    """Values of a POD's diagnostic sensors.
+
+    A direction without any sample, while the other one has some, belongs to a
+    meter that never measured it (typically the return to grid without solar
+    panels): it shows 0 kWh on the other direction's last day instead of
+    staying unknown forever.
+    """
+    giorni_presenti = [giorno for giorno, _ in filter(None, ultimi_giorni.values())]
+    per_direzione: dict[str, dict | None] = {}
+    for direzione, valore in ultimi_giorni.items():
+        if valore is None and giorni_presenti:
+            valore = (max(giorni_presenti), 0.0)
+        per_direzione[direzione] = (
+            None if valore is None else {"giorno": valore[0].isoformat(), "kwh": round(valore[1], 3)}
+        )
+    return {
+        "ultima_data_disponibile": ultima_data.isoformat() if ultima_data else None,
+        "ultimo_giorno": per_direzione,
+    }
+
+
+def _descrivi_errore_api(err: ApiError, lingua: str) -> str:
+    """One sentence on a data API error, for the messages shown to the user
+    (in a placeholder, hence in the server language: see testi.py)."""
+    if err.rete:
+        return testo(lingua, "api_non_raggiungibile")
+    if err.status in (401, 403):
+        return testo(lingua, "api_non_autorizzata", stato=str(err.status))
+    if err.status is not None and err.status >= 500:
+        return testo(lingua, "api_non_disponibile", stato=str(err.status))
+    if err.status is not None:
+        return testo(lingua, "api_rifiutata", stato=str(err.status))
+    return testo(lingua, "api_errore", dettaglio=str(err))
+
+
 class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
@@ -133,9 +169,12 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         )
         self.entry = entry
         self.pods: list[str] = list(entry.data[CONF_PODS])
-        # True while the token refresh hits E-Distribuzione's anti-bot check
-        # (see _async_ensure_token and async_setup_entry).
+        # True while E-Distribuzione blocks the token refresh, with the anti-bot
+        # check or by rejecting the OAuth client (see _async_ensure_token and
+        # async_setup_entry).
         self.accesso_bloccato = False
+        # What the diagnostic sensors show, per POD (see async_aggiorna_riepilogo).
+        self.riepilogo: dict[str, dict] = {}
         session = async_get_clientsession(hass)
         self._auth = AuthClient(session)
         self._api = ApiClient(session, access_token="")
@@ -163,45 +202,114 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
             chiave = "serie_immissione" if immessa else "serie_prelievo"
         return f"E-Distribuzione {pod} - {testo(self.lingua, chiave)}"
 
+    def _segnala_blocco(self, issue: str) -> None:
+        """Repairs notice for an access blocked by E-Distribuzione.
+
+        The refresh_token stays valid and saved: we retry on the next cycle,
+        and the notice explains why the data is stuck instead of leaving it to
+        be inferred from the logs. Only one of the two notices at a time: they
+        describe two different blocks.
+        """
+        self.accesso_bloccato = True
+        for altro in (ISSUE_ACCESSO_BLOCCATO, ISSUE_APP_BLOCCATA):
+            if altro != issue:
+                ir.async_delete_issue(self.hass, DOMAIN, altro)
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=issue,
+        )
+
     async def _async_ensure_token(self) -> None:
         refresh_token = self.entry.data[CONF_REFRESH_TOKEN]
         try:
             tokens = await self._auth.async_refresh_access_token(refresh_token)
         except AccessoBloccato as err:
-            # The refresh_token stays valid and saved: we retry on the next
-            # cycle, and the Repairs notice explains why the data is stuck
-            # instead of leaving it to be inferred from the logs.
-            self.accesso_bloccato = True
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                ISSUE_ACCESSO_BLOCCATO,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_ACCESSO_BLOCCATO,
-            )
+            self._segnala_blocco(ISSUE_ACCESSO_BLOCCATO)
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="accesso_bloccato"
             ) from err
+        except AppBloccata as err:
+            # Not a reauth: the login goes through the same OAuth client and is
+            # refused too, while the saved refresh_token works again as soon as
+            # E-Distribuzione lifts the block.
+            _LOGGER.warning("Rinnovo dell'accesso rifiutato: %s", err)
+            self._segnala_blocco(ISSUE_APP_BLOCCATA)
+            raise UpdateFailed(
+                translation_domain=DOMAIN, translation_key="app_bloccata"
+            ) from err
+        except TokenNonValido as err:
+            # The refresh_token was revoked or has expired (password change,
+            # sessions closed on Enel's side, ...): Home Assistant shows the
+            # reauth, which keeps PODs, options and history.
+            _LOGGER.warning("Accesso a E-Distribuzione scaduto: %s", err)
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN, translation_key="accesso_scaduto"
+            ) from err
         except AuthError as err:
-            # A failed refresh almost certainly means the refresh_token was
-            # revoked (password change, Enel-side session cleanup, ...) and the
-            # user must log in again through the config_flow reauth.
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="refresh_token_fallito",
                 translation_placeholders={"errore": str(err)},
             ) from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="portale_non_raggiungibile",
+                translation_placeholders={"errore": type(err).__name__},
+            ) from err
 
-        # Access possible again: the notice, if any, is no longer needed.
+        # Access possible again: the notices, if any, are no longer needed.
         self.accesso_bloccato = False
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_ACCESSO_BLOCCATO)
+        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_APP_BLOCCATA)
         self._api.update_token(tokens.access_token)
 
         if tokens.refresh_token != refresh_token:
             new_data = dict(self.entry.data)
             new_data[CONF_REFRESH_TOKEN] = tokens.refresh_token
             self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+
+    # ------------------------------------------------------------------
+    # Diagnostic sensors
+    # ------------------------------------------------------------------
+
+    async def async_aggiorna_riepilogo(self) -> dict[str, dict]:
+        """Refresh what the diagnostic sensors show, for every POD.
+
+        Read from what has already been imported - the Recorder statistics for
+        the last date, the local 15-minute database for the last day's kWh -
+        not from the last request. Up to v0.6.0 the kWh came from the cycle
+        that had just downloaded the data, so an hour later the sensors went
+        back to unknown; now they stay right between one daily request and the
+        next, after a restart, after a history fetch and while E-Distribuzione
+        cannot be reached.
+        """
+        db_path = raw_storage.percorso_predefinito(self.hass)
+        riepilogo: dict[str, dict] = {}
+        for pod in self.pods:
+            try:
+                ultima_data = (
+                    await async_get_ultima_data_disponibile(self.hass, pod)
+                    if "recorder" in self.hass.config.components
+                    else None
+                )
+                ultimi_giorni = {
+                    direzione: await self.hass.async_add_executor_job(
+                        raw_storage.kwh_ultimo_giorno, db_path, pod, direzione, FUSO_ITALIA
+                    )
+                    for direzione in MAGNITUDE_TUTTE
+                }
+            except Exception:  # noqa: BLE001 - diagnostics only, never fail an update
+                _LOGGER.exception("POD %s: valori dei sensori diagnostici non aggiornati", pod)
+                riepilogo[pod] = self.riepilogo.get(pod, {})
+                continue
+            riepilogo[pod] = _riepilogo_pod(ultima_data, ultimi_giorni)
+        self.riepilogo = riepilogo
+        return riepilogo
 
     # ------------------------------------------------------------------
     # Configurable hour + queue of days to retry, PER POD
@@ -413,10 +521,10 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         A single request per direction, not one per day: the endpoint accepts a
         real multi-day range in a single response (up to 181 days).
 
-        Returns {magnitude: {"giorni_ricevuti": set[date], "kwh_ultimo_giorno":
-        float|None}} for the directions that returned valid, honoured data (see
-        _magnitude_onorata) - a direction with no data for this POD/period
-        simply does not appear in the result.
+        Returns {magnitude: {"giorni_ricevuti": set[date]}} for the directions
+        that returned valid, honoured data (see _magnitude_onorata) - a
+        direction with no data for this POD/period simply does not appear in
+        the result.
         """
         risultati: dict[str, dict] = {}
         for magnitude in MAGNITUDE_TUTTE:
@@ -440,13 +548,7 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                 self.hass, pod, curva, immessa=immessa, nome=self._nome_serie(pod, immessa)
             )
 
-            giorni_ricevuti = _giorni_ricevuti(curva)
-            risultati[magnitude] = {
-                "giorni_ricevuti": giorni_ricevuti,
-                "kwh_ultimo_giorno": (
-                    _kwh_del_giorno(curva, max(giorni_ricevuti)) if giorni_ricevuti else None
-                ),
-            }
+            risultati[magnitude] = {"giorni_ricevuti": _giorni_ricevuti(curva)}
         return risultati
 
     # ------------------------------------------------------------------
@@ -456,16 +558,11 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
     async def _async_update_data(self) -> dict:
         await self._async_ensure_token()
 
-        by_pod: dict[str, dict] = {}
         for pod in self.pods:
             richiesta = await self._prossima_richiesta(pod)
-            kwh_prelevata = None
-            kwh_immessa = None
-            ultimo_giorno_richiesto = None
 
             if richiesta is not None:
                 data_da, data_a = richiesta
-                ultimo_giorno_richiesto = data_a
                 try:
                     risultati = await self._async_importa_periodo(pod, data_da, data_a)
                 except ApiError as err:
@@ -476,7 +573,10 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                     raise UpdateFailed(
                         translation_domain=DOMAIN,
                         translation_key="errore_import_pod",
-                        translation_placeholders={"pod": pod, "errore": str(err)},
+                        translation_placeholders={
+                            "pod": pod,
+                            "errore": _descrivi_errore_api(err, self.lingua),
+                        },
                     ) from err
 
                 ricevuti_prelevata = risultati.get(MAGNITUDE_PRELEVATA, {}).get(
@@ -507,23 +607,7 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                         sorted(g.isoformat() for g in ricevuti_immessa),
                     )
 
-                kwh_prelevata = risultati.get(MAGNITUDE_PRELEVATA, {}).get("kwh_ultimo_giorno")
-                kwh_immessa = risultati.get(MAGNITUDE_IMMESSA, {}).get("kwh_ultimo_giorno")
-
-            ultima_data_disponibile = await async_get_ultima_data_disponibile(self.hass, pod)
-
-            by_pod[pod] = {
-                "ultimo_giorno_curva_richiesto": (
-                    ultimo_giorno_richiesto.isoformat() if ultimo_giorno_richiesto else None
-                ),
-                "ultima_data_disponibile": (
-                    ultima_data_disponibile.isoformat() if ultima_data_disponibile else None
-                ),
-                "kwh_prelevata_ultimo_giorno": kwh_prelevata,
-                "kwh_immessa_ultimo_giorno": kwh_immessa,
-            }
-
-        return {"by_pod": by_pod}
+        return {"by_pod": await self.async_aggiorna_riepilogo()}
 
     # ------------------------------------------------------------------
     # Manual history fetch (edistribuzione.recupera_storico action)
@@ -542,6 +626,9 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         UI, where a silent failure is indistinguishable from a success. With
         several PODs and only a partial failure the action succeeds - something
         was imported - and the failed PODs stay in the logs.
+
+        Every error message says what to change: the action is often written by
+        hand in YAML, where swapped or too recent dates are easy to get.
         """
         if pod is not None and pod not in self.pods:
             raise ServiceValidationError(
@@ -551,33 +638,16 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
             )
         pod_da_recuperare = [pod] if pod else list(self.pods)
 
-        if data_da > data_a:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="date_invertite",
-                translation_placeholders={"data_da": str(data_da), "data_a": str(data_a)},
-            )
+        self._verifica_periodo(data_da, data_a)
 
-        ultimo_utile = dt_util.now().date() - timedelta(days=RITARDO_DATI_GIORNI)
-        if data_a > ultimo_utile:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="data_fine_troppo_recente",
-                translation_placeholders={"data_a": str(data_a), "ultimo_utile": str(ultimo_utile)},
-            )
-
-        giorni_totali = (data_a - data_da).days + 1
-        if giorni_totali > MAX_GIORNI_RECUPERO_STORICO:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="intervallo_troppo_ampio",
-                translation_placeholders={
-                    "giorni": str(giorni_totali),
-                    "massimo": str(MAX_GIORNI_RECUPERO_STORICO),
-                },
-            )
-
-        await self._async_ensure_token()
+        try:
+            await self._async_ensure_token()
+        except ConfigEntryAuthFailed:
+            # Outside the polling cycle Home Assistant does not start the
+            # reauth on its own: without it, the message would point to a
+            # button that is not there.
+            self.entry.async_start_reauth(self.hass)
+            raise
 
         _LOGGER.info(
             "Recupero storico avviato: %s - %s (POD: %s)",
@@ -600,7 +670,7 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                     data_a,
                     err,
                 )
-                fallimenti.append(f"{pod_corrente}: {err}")
+                fallimenti.append(f"{pod_corrente}: {_descrivi_errore_api(err, self.lingua)}")
                 continue
 
             ricevuti_unione: set[date] = set()
@@ -651,6 +721,51 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                     "data_a": str(data_a),
                     "dettagli": "; ".join(fallimenti),
                 },
+            )
+
+        # The sensors and the card read what was just imported right away,
+        # without waiting for the next hourly cycle.
+        await self.async_aggiorna_riepilogo()
+        self.async_update_listeners()
+
+    @staticmethod
+    def _verifica_periodo(data_da: date, data_a: date) -> None:
+        """Reject a range that cannot give data, saying how to fix it.
+
+        Checked in this order because the first problem found is the one to
+        fix: swapped dates first (both "too recent" errors would be misleading
+        then), then a start or end E-Distribuzione has not published yet, then
+        the length.
+        """
+        ultimo_utile = dt_util.now().date() - timedelta(days=RITARDO_DATI_GIORNI)
+
+        def errore(chiave: str, **segnaposto: str) -> ServiceValidationError:
+            return ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=chiave,
+                translation_placeholders={
+                    "data_da": data_da.isoformat(),
+                    "data_a": data_a.isoformat(),
+                    "ultimo_utile": ultimo_utile.isoformat(),
+                    **segnaposto,
+                },
+            )
+
+        if data_da > data_a:
+            raise errore("date_invertite")
+        if data_da > ultimo_utile:
+            raise errore("data_inizio_troppo_recente")
+        if data_a > ultimo_utile:
+            raise errore("data_fine_troppo_recente")
+
+        giorni_totali = (data_a - data_da).days + 1
+        if giorni_totali > MAX_GIORNI_RECUPERO_STORICO:
+            fine_prima_parte = data_da + timedelta(days=MAX_GIORNI_RECUPERO_STORICO - 1)
+            raise errore(
+                "intervallo_troppo_ampio",
+                giorni=str(giorni_totali),
+                massimo=str(MAX_GIORNI_RECUPERO_STORICO),
+                fine_prima_parte=fine_prima_parte.isoformat(),
             )
 
     @property

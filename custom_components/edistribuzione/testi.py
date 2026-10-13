@@ -43,7 +43,24 @@ TESTI: dict[str, dict[str, str]] = {
         ),
         "nota_reauth": " Stai aggiornando le credenziali per i POD: {pods}.",
         "nessun_pod": "nessuno",
-        "nessun_dato_pod": "nessun dato per il periodo richiesto",
+        "nessun_dato_pod": (
+            "E-Distribuzione non ha dati per questo periodo (giorni precedenti "
+            "all'attivazione del contatore, o non ancora pubblicati)"
+        ),
+        "api_non_raggiungibile": (
+            "il servizio dati di E-Distribuzione non è raggiungibile, controlla la "
+            "connessione a internet"
+        ),
+        "api_non_autorizzata": (
+            "E-Distribuzione ha rifiutato la richiesta dei dati (HTTP {stato}): il "
+            "POD potrebbe non appartenere più all'account"
+        ),
+        "api_non_disponibile": (
+            "il servizio dati di E-Distribuzione non risponde (HTTP {stato}), "
+            "riprova più tardi"
+        ),
+        "api_rifiutata": "E-Distribuzione ha rifiutato la richiesta dei dati (HTTP {stato})",
+        "api_errore": "E-Distribuzione ha risposto con un errore ({dettaglio})",
     },
     "en": {
         "modello_account": "API account",
@@ -70,7 +87,24 @@ TESTI: dict[str, dict[str, str]] = {
         ),
         "nota_reauth": " You are updating the credentials for these PODs: {pods}.",
         "nessun_pod": "none",
-        "nessun_dato_pod": "no data for the requested period",
+        "nessun_dato_pod": (
+            "E-Distribuzione has no data for this period (days before the meter "
+            "was activated, or not published yet)"
+        ),
+        "api_non_raggiungibile": (
+            "the E-Distribuzione data service cannot be reached, check the internet "
+            "connection"
+        ),
+        "api_non_autorizzata": (
+            "E-Distribuzione refused the data request (HTTP {stato}): the POD may no "
+            "longer belong to the account"
+        ),
+        "api_non_disponibile": (
+            "the E-Distribuzione data service is not responding (HTTP {stato}), try "
+            "again later"
+        ),
+        "api_rifiutata": "E-Distribuzione refused the data request (HTTP {stato})",
+        "api_errore": "E-Distribuzione answered with an error ({dettaglio})",
     },
 }
 

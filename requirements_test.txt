@@ -2,8 +2,8 @@ pytest
 pytest-asyncio
 aiohttp
 freezegun
-# Serve solo per i test che importano moduli con dipendenze da Home Assistant
-# (coordinator.py, config_flow.py, sensor.py, statistics.py). I test in
-# test_api.py/test_auth.py non ne hanno bisogno: quei moduli non importano
+# Only needed by the tests that import modules depending on Home Assistant
+# (coordinator.py, config_flow.py, sensor.py, statistics.py). The tests in
+# test_api.py/test_auth.py do not need it: those modules do not import
 # homeassistant.
 pytest-homeassistant-custom-component

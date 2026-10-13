@@ -24,7 +24,7 @@ tests/test_fasce.py).
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -37,16 +37,16 @@ FASCE = (F1, F2, F3)
 # The 11 traditional holidays listed in ARERA/contract documents; Easter Monday
 # is movable and added separately.
 _FESTIVITA_FISSE = (
-    (1, 1),    # Capodanno
-    (1, 6),    # Epifania
-    (4, 25),   # Liberazione
-    (5, 1),    # Festa del lavoro
-    (6, 2),    # Festa della Repubblica
-    (8, 15),   # Ferragosto
-    (11, 1),   # Ognissanti
-    (12, 8),   # Immacolata
-    (12, 25),  # Natale
-    (12, 26),  # Santo Stefano
+    (1, 1),    # New Year's Day
+    (1, 6),    # Epiphany
+    (4, 25),   # Liberation Day
+    (5, 1),    # Labour Day
+    (6, 2),    # Republic Day
+    (8, 15),   # Assumption (Ferragosto)
+    (11, 1),   # All Saints' Day
+    (12, 8),   # Immaculate Conception
+    (12, 25),  # Christmas
+    (12, 26),  # St Stephen's Day
 )
 
 # October 4, San Francesco: a national holiday under Law 151/2025, in force
@@ -112,6 +112,24 @@ def fascia(istante: datetime) -> str:
     if 8 <= ora < 19:
         return F1
     return F2
+
+
+def prossimo_cambio(istante: datetime) -> datetime:
+    """First instant after 'istante' in which the band changes (UTC aware).
+
+    Band boundaries always fall on the full hour, and Italian time is always a
+    whole number of hours off UTC: stepping one UTC hour at a time from the
+    next full hour visits every possible boundary. The longest stretch in one
+    band is a run of holidays next to a weekend, a few days at most: two weeks
+    of hours are a generous bound.
+    """
+    attuale = fascia(istante)
+    ora = istante.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    for _ in range(14 * 24):
+        ora += timedelta(hours=1)
+        if fascia(ora) != attuale:
+            return ora
+    raise RuntimeError(f"Nessun cambio di fascia nelle due settimane dopo {istante}")
 
 
 def aggrega_ore_per_fascia(

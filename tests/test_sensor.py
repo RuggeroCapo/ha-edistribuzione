@@ -1,16 +1,25 @@
-"""Test dei sensori diagnostici: leggono coordinator.data nella forma
-{"by_pod": {pod: {...}}}.
+"""Sensors: the diagnostic ones read coordinator.riepilogo, shaped as
+{pod: {"ultima_data_disponibile": ..., "ultimo_giorno": {direzione: ...}}};
+the current time band is computed from the calendar.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from freezegun.api import FrozenDateTimeFactory
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from custom_components.edistribuzione import sensor as s
-from custom_components.edistribuzione.const import DOMAIN, TIPO_POD_DEFAULT
+from custom_components.edistribuzione.const import (
+    DOMAIN,
+    MAGNITUDE_IMMESSA,
+    MAGNITUDE_PRELEVATA,
+    TIPO_POD_DEFAULT,
+)
+from custom_components.edistribuzione.fasce import FUSO_ITALIA
 
 POD = "IT001E00000009"
 
@@ -22,14 +31,19 @@ def _entry(hass=None, pods=(POD,)):
     return entry
 
 
-def _coord(by_pod=None, pods=(POD,), tipo_pod=TIPO_POD_DEFAULT, lingua="it"):
+def _coord(riepilogo=None, pods=(POD,), tipo_pod=TIPO_POD_DEFAULT, lingua="it"):
     return SimpleNamespace(
-        data={"by_pod": by_pod} if by_pod is not None else None,
+        riepilogo=riepilogo or {},
+        last_update_success=False,
         pods=list(pods),
         entry=None,
         tipo_pod=lambda pod: tipo_pod,
         lingua=lingua,
     )
+
+
+def _ultimo_giorno(prelevata=None, immessa=None):
+    return {MAGNITUDE_PRELEVATA: prelevata, MAGNITUDE_IMMESSA: immessa}
 
 
 def test_pod_configurati():
@@ -49,27 +63,35 @@ def test_ultima_data_disponibile_senza_dati():
     assert sensore.native_value is None
 
 
-def test_consumo_giorno_prelevata_arrotonda_a_tre_decimali():
+def test_consumo_giorno_legge_valore_e_giorno_della_direzione():
     coord = _coord({
         POD: {
-            "kwh_prelevata_ultimo_giorno": 1.23456,
-            "ultimo_giorno_curva_richiesto": "2026-09-02",
+            "ultimo_giorno": _ultimo_giorno(
+                prelevata={"giorno": "2026-09-02", "kwh": 1.235},
+                immessa={"giorno": "2026-09-01", "kwh": 9.876},
+            )
         }
     })
-    sensore = s.ConsumoGiornoSensor(coord, _entry(), POD, immessa=False)
-    assert sensore.native_value == 1.235
-    assert sensore.extra_state_attributes["giorno"] == "2026-09-02"
+    prelevata = s.ConsumoGiornoSensor(coord, _entry(), POD, immessa=False)
+    immessa = s.ConsumoGiornoSensor(coord, _entry(), POD, immessa=True)
+    assert prelevata.native_value == 1.235
+    assert prelevata.extra_state_attributes["giorno"] == "2026-09-02"
+    assert immessa.native_value == 9.876
+    assert immessa.extra_state_attributes["giorno"] == "2026-09-01"
 
 
-def test_consumo_giorno_immessa_legge_la_chiave_propria():
-    coord = _coord({
-        POD: {
-            "kwh_prelevata_ultimo_giorno": 1.0,
-            "kwh_immessa_ultimo_giorno": 9.876,
-        }
-    })
-    sensore = s.ConsumoGiornoSensor(coord, _entry(), POD, immessa=True)
-    assert sensore.native_value == 9.876
+def test_consumo_giorno_senza_dati_resta_sconosciuto():
+    sensore = s.ConsumoGiornoSensor(_coord(), _entry(), POD, immessa=False)
+    assert sensore.native_value is None
+    assert sensore.extra_state_attributes["giorno"] is None
+
+
+def test_sensori_diagnostici_disponibili_anche_se_l_aggiornamento_fallisce():
+    """The values come from data already imported: they stay valid while
+    E-Distribuzione does not answer (last_update_success False)."""
+    coord = _coord({POD: {"ultima_data_disponibile": "2026-09-03"}})
+    assert s.UltimaDataDisponibileSensor(coord, _entry(), POD).available
+    assert s.ConsumoGiornoSensor(coord, _entry(), POD).available
 
 
 @pytest.mark.parametrize(
@@ -107,6 +129,47 @@ async def test_build_entities_conta_account_piu_tre_per_pod(hass):
         lingua="it",
     )
     entità = s.build_entities(hass, coord)
-    # 1 sull'account + 3 per ciascuno dei 2 POD (ultima data + prelevata + immessa)
-    assert len(entità) == 1 + 3 * 2
-    assert "PodConfiguratiSensor" in {type(e).__name__ for e in entità}
+    # 2 on the account (configured PODs, current time band) + 3 for each of
+    # the 2 PODs (last date + consumption + injection)
+    assert len(entità) == 2 + 3 * 2
+    assert {"PodConfiguratiSensor", "FasciaCorrenteSensor"} <= {type(e).__name__ for e in entità}
+
+
+async def test_fascia_corrente_cambia_al_confine_senza_polling(
+    hass, freezer: FrozenDateTimeFactory
+):
+    """Monday October 12, 2026, 07:30 in Italy: F2 until 08:00, then F1. The
+    state changes exactly at the boundary, through the scheduled timer."""
+    await hass.config.async_set_time_zone("Europe/Rome")
+    freezer.move_to(datetime(2026, 10, 12, 7, 30, tzinfo=FUSO_ITALIA))
+    entry = _entry(hass)
+    sensore = s.FasciaCorrenteSensor(_coord(), entry)
+    sensore.hass = hass
+    # The state written to the state machine is checked by the full setup
+    # test (test_azione_recupera_storico.py): here the timer is what matters.
+    sensore.async_write_ha_state = Mock()
+    await sensore.async_added_to_hass()
+
+    assert sensore.native_value == "f2"
+    attributi = sensore.extra_state_attributes
+    assert attributi["prossima_fascia"] == "f1"
+    assert attributi["prossimo_cambio"] == datetime(2026, 10, 12, 8, 0, tzinfo=FUSO_ITALIA)
+
+    freezer.move_to(datetime(2026, 10, 12, 8, 0, 1, tzinfo=FUSO_ITALIA))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert sensore.native_value == "f1"
+    assert sensore.async_write_ha_state.call_count == 2
+    assert sensore.extra_state_attributes["prossimo_cambio"] == datetime(
+        2026, 10, 12, 19, 0, tzinfo=FUSO_ITALIA
+    )
+
+    sensore._annulla()
+    assert sensore._annulla_timer is None
+
+
+def test_fascia_corrente_e_un_enum_sull_account():
+    sensore = s.FasciaCorrenteSensor(_coord(), _entry())
+    assert sensore.options == ["f1", "f2", "f3"]
+    assert sensore.translation_key == "fascia_corrente"
+    assert sensore.device_info["identifiers"] == {(DOMAIN, sensore.unique_id.rsplit("_", 2)[0])}

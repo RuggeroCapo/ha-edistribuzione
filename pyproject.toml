@@ -19,14 +19,14 @@ select = [
     "SIM",  # flake8-simplify
 ]
 ignore = [
-    # I commenti (in italiano, spesso citazioni di messaggi reali delle API)
-    # sfondano regolarmente le 100 colonne. Il codice vero resta sotto.
+    # Comments (often quoting real API messages) regularly go past 100
+    # columns. The actual code stays below.
     "E501",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# I test costruiscono di proposito classi/fixture con nomi e strutture
-# "innaturali" per simulare le risposte delle API.
+# The tests deliberately build classes/fixtures with "unnatural" names and
+# structures to simulate the API responses.
 "tests/**" = ["B011", "SIM"]
 
 [tool.ruff.lint.isort]

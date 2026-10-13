@@ -1,22 +1,21 @@
-"""_prossima_richiesta: quale intervallo chiedere per un POD in questo ciclo.
+"""_prossima_richiesta: which range to request for a POD in this cycle.
 
-Copre due comportamenti distinti:
+Covers two distinct behaviours:
 
-- Regressione trovata in test live con due POD sulla stessa entry: solo il
-  primo POD della lista faceva il fetch immediato di verifica al primo
-  avvio, perché quella decisione era gestita da un flag CONDIVISO per
-  l'intera entry (CONF_DATA_INSTALLAZIONE) invece che da una condizione
-  per-POD ("questo POD ha già dei dati?"). Con due POD entrambi senza dati,
-  il secondo restava senza nulla fino all'orario configurato (default
-  19:00), perché quando il ciclo arrivava a lui il flag era già stato
-  impostato dal primo.
+- Regression found in live tests with two PODs on the same entry: only the
+  first POD in the list did the immediate check fetch on the first start,
+  because that decision was driven by a flag SHARED by the whole entry
+  (CONF_DATA_INSTALLAZIONE) instead of by a per-POD condition ("does this POD
+  already have data?"). With two PODs both without data, the second one got
+  nothing until the configured hour (19:00 by default), because by the time
+  the cycle reached it the flag had already been set by the first.
 
-- Il ricontrollo periodico degli ultimi GIORNI_RICONTROLLO giorni (non solo
-  il più recente): E-Distribuzione può rettificare un giorno già
-  pubblicato. Il throttle "al massimo una richiesta al giorno per POD" resta
-  quello di sempre (confronto tra ultima_disponibile e 'atteso', che non
-  cambia finché non cambia il giorno) - cambia solo l'AMPIEZZA della
-  finestra richiesta quando scatta.
+- The periodic recheck of the last GIORNI_RICONTROLLO days (not only the most
+  recent one): E-Distribuzione can correct a day already published. The
+  "at most one request a day per POD" throttle stays the same as always
+  (comparing ultima_disponibile and 'atteso', which does not change until the
+  day changes) - only the WIDTH of the requested window changes when it
+  fires.
 """
 from __future__ import annotations
 
@@ -30,18 +29,18 @@ from custom_components.edistribuzione.const import CONF_DATA_INSTALLAZIONE, GIOR
 
 from .conftest import POD_A, POD_B
 
-OGGI = "2026-09-23 15:00:00"  # prima delle 19:00 (ORA_MINIMA_RICHIESTA di default)
-OGGI_DOPO_ORARIO = "2026-09-23 20:00:00"  # dopo le 19:00
-ATTESO = date(2026, 9, 22)  # oggi - RITARDO_DATI_GIORNI
+OGGI = "2026-09-23 15:00:00"  # before 19:00 (default ORA_MINIMA_RICHIESTA)
+OGGI_DOPO_ORARIO = "2026-09-23 20:00:00"  # after 19:00
+ATTESO = date(2026, 9, 22)  # today - RITARDO_DATI_GIORNI
 INIZIO_RICONTROLLO = ATTESO - timedelta(days=GIORNI_RICONTROLLO - 1)  # 2026-09-20
 
 
 @pytest.fixture(autouse=True)
 async def _fuso_utc(hass):
-    """L'ora richiesta (_ora_richiesta) è confrontata contro adesso.hour nel
-    fuso configurato: senza fissarlo a UTC, il fuso di default dei test
-    farebbe scattare o saltare il controllo "dopo le 19:00" in modo
-    imprevedibile a seconda della macchina/ambiente."""
+    """The request hour (_ora_richiesta) is compared with adesso.hour in the
+    configured time zone: without pinning it to UTC, the tests' default time
+    zone would trigger or skip the "after 19:00" check unpredictably,
+    depending on the machine/environment."""
     await hass.config.async_set_time_zone("UTC")
 
 
@@ -58,9 +57,9 @@ def _con_ultima_data(per_pod: dict[str, date | None]):
 async def test_ogni_pod_senza_dati_fa_il_fetch_immediato_anche_prima_dell_ora(
     hass, make_edist_coordinator
 ):
-    """Con due POD entrambi senza dati (primo avvio), ENTRAMBI devono
-    chiedere subito la finestra di ricontrollo - non solo il primo della
-    lista, e non solo il giorno più recente."""
+    """With two PODs both without data (first start), BOTH must request the
+    recheck window right away - not only the first in the list, and not only
+    the most recent day."""
     coordinator = make_edist_coordinator(pods=[POD_A, POD_B])
 
     with freeze_time(OGGI), _con_ultima_data({POD_A: None, POD_B: None}):
@@ -83,10 +82,9 @@ async def test_pod_con_dati_aspetta_l_orario_configurato(hass, make_edist_coordi
 async def test_pod_aggiunto_dopo_su_entry_gia_avviata_fa_comunque_il_fetch_immediato(
     hass, make_edist_coordinator
 ):
-    """Un POD aggiunto dalle opzioni dopo che l'entry esiste già (quindi con
-    CONF_DATA_INSTALLAZIONE già impostata da tempo) deve comunque partire
-    subito, perché per LUI non c'è ancora nessun dato - questo era esattamente
-    il caso che il bug rompeva."""
+    """A POD added from the options after the entry already exists (so with
+    CONF_DATA_INSTALLAZIONE set long ago) must still start right away,
+    because there is no data for IT yet - exactly the case the bug broke."""
     coordinator = make_edist_coordinator(
         pods=[POD_A, POD_B], data={CONF_DATA_INSTALLAZIONE: "2026-09-01"}
     )
@@ -102,9 +100,9 @@ async def test_pod_aggiunto_dopo_su_entry_gia_avviata_fa_comunque_il_fetch_immed
 async def test_dopo_l_orario_richiede_la_finestra_di_ricontrollo_non_solo_atteso(
     hass, make_edist_coordinator
 ):
-    """Passato l'orario configurato, un POD non ancora aggiornato per oggi
-    chiede GIORNI_RICONTROLLO giorni fino ad 'atteso', in un'unica
-    richiesta - non solo l'ultimo giorno."""
+    """Past the configured hour, a POD not yet updated today requests
+    GIORNI_RICONTROLLO days up to 'atteso', in a single request - not only
+    the last day."""
     coordinator = make_edist_coordinator(pods=[POD_A])
 
     with freeze_time(OGGI_DOPO_ORARIO), _con_ultima_data({POD_A: date(2026, 9, 21)}):
@@ -114,9 +112,9 @@ async def test_dopo_l_orario_richiede_la_finestra_di_ricontrollo_non_solo_atteso
 
 
 async def test_gia_ricontrollato_oggi_non_richiede_di_nuovo(hass, make_edist_coordinator):
-    """Al massimo una richiesta al giorno per POD: se 'ultima_disponibile'
-    è già arrivata ad 'atteso' (il ricontrollo di oggi è già avvenuto), i
-    cicli orari successivi non richiedono di nuovo, fino al giorno dopo."""
+    """At most one request a day per POD: if 'ultima_disponibile' has
+    already reached 'atteso' (today's recheck already happened), the
+    following hourly cycles do not request again until the next day."""
     coordinator = make_edist_coordinator(pods=[POD_A])
 
     with freeze_time(OGGI_DOPO_ORARIO), _con_ultima_data({POD_A: ATTESO}):
@@ -128,9 +126,9 @@ async def test_gia_ricontrollato_oggi_non_richiede_di_nuovo(hass, make_edist_coo
 async def test_giorni_arretrati_piu_vecchi_della_finestra_allargano_l_inizio(
     hass, make_edist_coordinator
 ):
-    """Un giorno arretrato più vecchio della finestra di ricontrollo (es.
-    bloccato in coda da un errore precedente) allarga l'intervallo
-    all'indietro per includerlo, sempre in un'unica richiesta."""
+    """A backlog day older than the recheck window (e.g. stuck in the queue
+    after a previous error) widens the range backwards to include it, still
+    in a single request."""
     from custom_components.edistribuzione.const import CONF_GIORNI_DA_RIPROVARE
 
     vecchio = (INIZIO_RICONTROLLO - timedelta(days=5)).isoformat()
@@ -148,9 +146,9 @@ async def test_giorni_arretrati_piu_vecchi_della_finestra_allargano_l_inizio(
 async def test_giorni_arretrati_dentro_la_finestra_non_la_allargano(
     hass, make_edist_coordinator
 ):
-    """Un giorno arretrato che rientra già nella finestra di ricontrollo
-    (es. ieri, rimasto in coda da un ciclo fallito) viene ricoperto dal
-    ricontrollo periodico stesso - non serve trattarlo come arretrato."""
+    """A backlog day already inside the recheck window (e.g. yesterday, left
+    in the queue by a failed cycle) is covered by the periodic recheck itself
+    - it does not need to be treated as backlog."""
     from custom_components.edistribuzione.const import CONF_GIORNI_DA_RIPROVARE
 
     dentro_la_finestra = (INIZIO_RICONTROLLO + timedelta(days=1)).isoformat()

@@ -1,8 +1,8 @@
-"""Icona dell'integrazione in brand/, servita da Home Assistant 2026.3+.
+"""Integration icon in brand/, served by Home Assistant 2026.3+.
 
-HA cerca brand/icon.png (256x256) e brand/icon@2x.png (512x512) nella
-cartella dell'integrazione; con dimensioni diverse l'icona appare sfocata o
-fuori scala nella pagina delle integrazioni.
+HA looks for brand/icon.png (256x256) and brand/icon@2x.png (512x512) in the
+integration's folder; with other sizes the icon looks blurred or out of scale
+on the integrations page.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ FIRMA_PNG = b"\x89PNG\r\n\x1a\n"
 
 
 def _dimensioni_png(percorso: Path) -> tuple[int, int, int]:
-    """(larghezza, altezza, tipo colore) dall'intestazione IHDR del PNG."""
+    """(width, height, colour type) from the PNG's IHDR header."""
     dati = percorso.read_bytes()[:26]
     assert dati[:8] == FIRMA_PNG and dati[12:16] == b"IHDR", percorso.name
     larghezza, altezza = struct.unpack(">II", dati[16:24])

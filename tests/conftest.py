@@ -1,8 +1,8 @@
-"""Fixture condivise per i test.
+"""Fixtures shared by the tests.
 
-pytest_plugins/enable_custom_integrations è il pattern standard richiesto da
-pytest-homeassistant-custom-component perché Home Assistant, nei test,
-carichi davvero questa integrazione custom invece di ignorarla.
+pytest_plugins/enable_custom_integrations is the standard pattern required by
+pytest-homeassistant-custom-component for Home Assistant to actually load this
+custom integration in the tests instead of ignoring it.
 """
 from __future__ import annotations
 
@@ -20,18 +20,17 @@ POD_B = "IT001E10000002"
 
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(request):
-    """Applicato automaticamente a tutti i test che usano il fixture 'hass' -
-    tranne quelli che richiedono anche 'recorder_mock'.
+    """Applied automatically to every test that uses the 'hass' fixture -
+    except those that also require 'recorder_mock'.
 
-    enable_custom_integrations dipende da 'hass', quindi lo forza a
-    inizializzarsi per primo. Il recorder ha invece bisogno di applicare le
-    sue patch PRIMA che 'hass' esista (vedi patch_recorder nel plugin): con
-    entrambi richiesti, 'hass' vince sempre la corsa e il recorder fallisce
-    con "assert not hass_fixture_setup". I test che usano recorder_mock in
-    questo progetto chiamano le funzioni dirette del modulo (mai
-    async_setup_component/il config flow), quindi non hanno bisogno delle
-    custom integrations abilitate: si salta pulito, invece di reinventare
-    l'ordine dei fixture.
+    enable_custom_integrations depends on 'hass', so it forces it to be set
+    up first. The recorder instead needs to apply its patches BEFORE 'hass'
+    exists (see patch_recorder in the plugin): with both requested, 'hass'
+    always wins the race and the recorder fails with "assert not
+    hass_fixture_setup". The tests that use recorder_mock in this project call
+    the module's functions directly (never async_setup_component or the config
+    flow), so they do not need the custom integrations enabled: they are
+    skipped cleanly, instead of reinventing the fixture order.
     """
     if "recorder_mock" in request.fixturenames:
         yield
@@ -42,7 +41,7 @@ def auto_enable_custom_integrations(request):
 
 @pytest.fixture
 def make_edist_coordinator(hass):
-    """Factory: EdistribuzioneCoordinator con una MockConfigEntry agganciata a hass."""
+    """Factory: EdistribuzioneCoordinator with a MockConfigEntry attached to hass."""
 
     def _make(*, data=None, options=None, pods=None):
         pods = pods if pods is not None else [POD_A]

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+### Added
+- Current time band sensor.
+- Guidance in the POD card when there is no data to show.
+
+### Changed
+- Clearer sign-in and action error messages, in English and Italian.
+- The last day sensors no longer go back to unknown.
+
+### Fixed
+- Sign-in and access issues ([#3](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues/3),
+  [#4](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues/4),
+  [#5](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues/5),
+  [#6](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues/6)).
+
 ## 0.6.0
 ### Fixed
 - When private.e-distribuzione.it is blocked by Imperva's anti-bot check, login and token

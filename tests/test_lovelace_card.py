@@ -1,6 +1,7 @@
-"""Registrazione della card Lovelace servita dall'integrazione."""
+"""Registration of the Lovelace card served by the integration."""
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.edistribuzione import lovelace_card
@@ -13,10 +14,10 @@ def test_il_file_della_card_esiste_e_definisce_la_card():
 
 
 def test_la_card_aspetta_il_registro_definitivo_di_home_assistant():
-    """Regressione verificata su HA 2026.2: i moduli extra possono girare
-    prima che il frontend installi il suo registro dei custom element. Un
-    define immediato finisce nel registro sbagliato e la card risulta
-    sconosciuta ("Errore di configurazione")."""
+    """Regression seen on HA 2026.2: extra modules can run before the
+    frontend installs its custom element registry. An immediate define ends
+    up in the wrong registry and the card is unknown ("Configuration
+    error")."""
     contenuto = lovelace_card.PERCORSO_FILE.read_text(encoding="utf-8")
     assert 'whenDefined("home-assistant").then(registraElementi)' in contenuto
     assert "customElements.define(CARD_TYPE" not in contenuto
@@ -46,11 +47,29 @@ async def test_registra_percorso_statico_e_modulo_una_sola_volta(hass):
 
 
 def test_l_impronta_cambia_col_contenuto_della_card(tmp_path):
-    """La card è in cache per 31 giorni: il ?v= deve cambiare a ogni
-    modifica del file, anche senza aumentare la versione del manifest."""
+    """The card is cached for 31 days: ?v= must change on every change to
+    the file, even without bumping the manifest version."""
     card = tmp_path / "card.js"
     card.write_text("console.log(1);", encoding="utf-8")
     prima = lovelace_card.impronta_file(card)
     card.write_text("console.log(2);", encoding="utf-8")
     assert lovelace_card.impronta_file(card) != prima
     assert len(prima) == 12
+
+
+def test_testi_della_card_nelle_due_lingue():
+    """Every card string exists in Italian and English, as in translations/."""
+    contenuto = lovelace_card.PERCORSO_FILE.read_text(encoding="utf-8")
+    blocco = contenuto[contenuto.index("const STRINGS = {") : contenuto.index("\n};\n")]
+    it, en = blocco.split("\n  en: {")
+    chiavi = lambda testo: set(re.findall(r"^    (\w+):", testo, re.MULTILINE))  # noqa: E731
+    assert chiavi(it) == chiavi(en)
+    assert {"empty_title", "history_text", "fetch_history"} <= chiavi(it)
+
+
+def test_la_card_porta_all_azione_recupera_storico():
+    """The buttons go through the "My Home Assistant" redirects, which point
+    to the right page on every version."""
+    contenuto = lovelace_card.PERCORSO_FILE.read_text(encoding="utf-8")
+    assert "/_my_redirect/developer_call_service?service=edistribuzione.recupera_storico" in contenuto
+    assert "/_my_redirect/config_flow_start?domain=edistribuzione" in contenuto

@@ -46,7 +46,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import aiohttp
 
@@ -87,6 +87,23 @@ _MARCATORI_TROPPE_SESSIONI = (
     "sessioni contemporanee",
     "numero di sessioni",
     "sessioni consentite",
+)
+
+# Other refusals of the login action ("KO: ..."), checked in this order. Only
+# the last group means wrong email or password (e.g. "KO: Username non
+# valido"): v0.6.0 reported every refusal that way, and users with the right
+# credentials were sent to recheck them while the portal had answered with a
+# technical error. Whatever matches none of them is still shown to the user
+# with the portal's own words (see LoginRifiutato).
+_MARCATORI_ERRORE_TECNICO = ("errore tecnico", "technical error")
+_MARCATORI_ACCOUNT_BLOCCATO = ("bloccat", "locked", "disattivat", "disabilitat")
+_MARCATORI_PASSWORD_SCADUTA = ("scadut", "expired")
+_MARCATORI_CREDENZIALI_ERRATE = (
+    "non valid",
+    "errat",
+    "invalid",
+    "incorrect",
+    "credenziali",
 )
 
 # Pages of Imperva's (Incapsula) anti-bot protection, which answers in place of
@@ -175,8 +192,34 @@ class AuthError(Exception):
     """Generic authentication error."""
 
 
-class InvalidCredentials(AuthError):
+class LoginRifiutato(AuthError):
+    """The portal refused the login with a message of its own.
+
+    'messaggio' is the portal's text without the "KO:" prefix: the config flow
+    shows it to the user as is, so that even a refusal we do not recognise
+    says what E-Distribuzione answered instead of a generic error.
+    """
+
+    def __init__(self, messaggio: str) -> None:
+        super().__init__(messaggio)
+        self.messaggio = messaggio
+
+
+class InvalidCredentials(LoginRifiutato):
     """Wrong email or password."""
+
+
+class ErroreTecnicoPortale(LoginRifiutato):
+    """The portal answered with a generic technical error: the credentials
+    were not judged wrong, the login simply did not go through."""
+
+
+class AccountBloccato(LoginRifiutato):
+    """The account is locked or disabled on the portal."""
+
+
+class PasswordScaduta(LoginRifiutato):
+    """The password has expired and must be changed on the website."""
 
 
 class InvalidOtp(AuthError):
@@ -201,6 +244,35 @@ class AccessoBloccato(AuthError):
     It is not a credentials problem nor a markup change, and there is nothing to
     fix here: it must be reported clearly and retried later, without insisting.
     """
+
+
+class AppBloccata(AuthError):
+    """The token endpoint answered "app_blocked": a Salesforce Transaction
+    Security policy is rejecting the OAuth client the integration uses (the
+    official app's).
+
+    It is a decision on E-Distribuzione's side, like the anti-bot check: the
+    refresh_token is not revoked and a new login does not get past it, so it
+    must be reported and retried later, not turned into a reauth.
+    """
+
+
+class TokenNonValido(AuthError):
+    """The token endpoint answered "invalid_grant": the refresh_token (or the
+    authorization code, right after the OTP) is expired or revoked. Only a new
+    login with email, password and OTP fixes it."""
+
+
+def _errore_oauth(codice: str | None, descrizione: str | None, contesto: str) -> AuthError:
+    """Exception for an error answered by the OAuth endpoints, as JSON
+    ({"error": ..., "error_description": ...}) or in the query of a redirect
+    to the app."""
+    dettaglio = f"{contesto}: {codice}" + (f" ({descrizione})" if descrizione else "")
+    if codice == "app_blocked":
+        return AppBloccata(dettaglio)
+    if codice == "invalid_grant":
+        return TokenNonValido(dettaglio)
+    return AuthError(dettaglio)
 
 
 def _verifica_non_bloccato(testo: str) -> None:
@@ -251,6 +323,10 @@ async def _get_following_redirects(
     Imperva, and following it as-is would land on the anti-bot page instead of
     the destination.
 
+    A redirect to the app (eneldist://...) carrying an "error" parameter is the
+    OAuth server refusing the request (e.g. error=app_blocked): it is raised as
+    such instead of trying to GET a non-HTTP address.
+
     Returns the final response (status < 300, no further Location); the caller is
     responsible for closing/consuming 'resp' as usual.
     """
@@ -262,6 +338,14 @@ async def _get_following_redirects(
             return resp
 
         resp.close()
+        if location.startswith(OAUTH_REDIRECT_URI):
+            query = parse_qs(urlsplit(location).query)
+            if "error" in query:
+                raise _errore_oauth(
+                    query["error"][0],
+                    query.get("error_description", [None])[0],
+                    "Autorizzazione OAuth rifiutata",
+                )
         location_url = aiohttp.client.URL(location, encoded=True)
         next_url = location_url if location_url.is_absolute() else resp.url.join(location_url)
         next_url = aiohttp.client.URL(riscrivi(str(next_url)), encoded=True)
@@ -526,23 +610,61 @@ class AuthClient:
                 ) from err
 
         try:
-            return_value = payload["actions"][0]["returnValue"]
-        except (KeyError, IndexError) as err:
+            azione = payload["actions"][0]
+            return_value = azione["returnValue"]
+        except (KeyError, IndexError, TypeError) as err:
             raise ParsingError("Forma inattesa della risposta di loginUser") from err
 
-        if not isinstance(return_value, str) or not return_value.startswith("OK:"):
+        if not isinstance(return_value, str):
+            # No answer from the controller at all: the Aura framework itself
+            # rejected the request (state ERROR, returnValue null). The
+            # credentials were never checked, so this must not become "invalid
+            # email or password" as it did up to v0.6.0.
+            errori = azione.get("error") or [{}]
+            dettaglio = errori[0].get("message") if isinstance(errori[0], dict) else None
+            _LOGGER.error(
+                "loginUser su %s senza esito (state %r): %r",
+                self._host,
+                azione.get("state"),
+                dettaglio,
+            )
+            raise ParsingError(
+                f"loginUser senza esito (state {azione.get('state')!r}): {dettaglio!r}"
+            )
+
+        if not return_value.startswith("OK:"):
             # The concurrent session limit arrives here as an error message of
             # the same login action: treating it as "invalid credentials" would
             # send the user to recheck email and password while the problem is
             # elsewhere.
-            self._verifica_non_troppe_sessioni(str(return_value))
-            raise InvalidCredentials(str(return_value))
+            self._verifica_non_troppe_sessioni(return_value)
+            _LOGGER.warning(
+                "E-Distribuzione ha rifiutato il login su %s con il messaggio %r",
+                self._host,
+                return_value,
+            )
+            raise self._rifiuto_login(return_value)
 
         # Following it establishes the 'sid' session cookie and lands on a bridge
         # page that redirects via JAVASCRIPT (not HTTP) to the real OTP form -
         # see _segui_a_pagina_otp. The URL comes back on the custom domain:
         # rewrite it onto the active host.
         return self._su_host(return_value[len("OK:") :])
+
+    @staticmethod
+    def _rifiuto_login(return_value: str) -> LoginRifiutato:
+        """Exception for a "KO: ..." of the login action, by meaning (see the
+        _MARCATORI_* above), carrying the portal's message without the prefix."""
+        messaggio = return_value.removeprefix("KO:").strip() or return_value
+        for marcatori, eccezione in (
+            (_MARCATORI_ERRORE_TECNICO, ErroreTecnicoPortale),
+            (_MARCATORI_ACCOUNT_BLOCCATO, AccountBloccato),
+            (_MARCATORI_PASSWORD_SCADUTA, PasswordScaduta),
+            (_MARCATORI_CREDENZIALI_ERRATE, InvalidCredentials),
+        ):
+            if _contiene(messaggio, marcatori):
+                return eccezione(messaggio)
+        return LoginRifiutato(messaggio)
 
     async def _segui_a_pagina_otp(self, frontdoor_url: str) -> str:
         """Step 3: frontdoor.jsp establishes the 'sid' session cookie and lands
@@ -872,7 +994,9 @@ class AuthClient:
             "grant_type": "authorization_code",
         }
         async with self._session.post(self._su_host(OAUTH_TOKEN_URL), data=data) as resp:
-            payload = self._json_token(await _leggi_testo(resp), resp.status)
+            payload = self._json_token(
+                await _leggi_testo(resp), resp.status, "Scambio del codice OAuth fallito"
+            )
         return self._tokens_from_payload(payload)
 
     async def async_refresh_access_token(self, refresh_token: str) -> OAuthTokens:
@@ -902,25 +1026,34 @@ class AuthClient:
             "client_id": OAUTH_CLIENT_ID,
         }
         async with self._session.post(self._su_host(OAUTH_TOKEN_URL), data=data) as resp:
-            text = await _leggi_testo(resp)
-            if resp.status != 200:
-                raise AuthError(f"Scambio del refresh_token fallito ({resp.status}): {text[:300]}")
-            payload = self._json_token(text, resp.status)
+            payload = self._json_token(
+                await _leggi_testo(resp), resp.status, "Scambio del refresh_token fallito"
+            )
         # Salesforce does not always return a new refresh_token on refresh - the
         # old one is kept if a new one does not arrive.
         payload.setdefault("refresh_token", refresh_token)
         return self._tokens_from_payload(payload)
 
     @staticmethod
-    def _json_token(testo: str, status: int) -> dict:
+    def _json_token(testo: str, status: int, contesto: str) -> dict:
         """JSON of the token endpoint; an HTML page in its place is a
-        ParsingError (hence an AuthError), not a generic ValueError."""
+        ParsingError (hence an AuthError), not a generic ValueError.
+
+        An error status is turned into the matching exception (see
+        _errore_oauth): app_blocked and invalid_grant need opposite reactions,
+        waiting for E-Distribuzione versus a new login."""
         try:
-            return json.loads(testo)
+            payload = json.loads(testo)
         except json.JSONDecodeError as err:
             raise ParsingError(
                 f"Risposta non-JSON dal token endpoint (status {status}): {testo[:200]!r}"
             ) from err
+        if status != 200:
+            errore = payload if isinstance(payload, dict) else {}
+            raise _errore_oauth(
+                errore.get("error"), errore.get("error_description"), f"{contesto} ({status})"
+            )
+        return payload
 
     @staticmethod
     def _tokens_from_payload(payload: dict) -> OAuthTokens:

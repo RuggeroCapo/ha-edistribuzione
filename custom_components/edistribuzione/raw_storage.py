@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
@@ -159,3 +159,34 @@ def leggi_campioni(db_path: str, pod: str, direzione: str) -> list[tuple[datetim
     finally:
         con.close()
     return [(datetime.fromtimestamp(ts, tz=UTC), kwh) for ts, kwh in righe]
+
+
+def kwh_ultimo_giorno(
+    db_path: str, pod: str, direzione: str, fuso: tzinfo
+) -> tuple[date, float] | None:
+    """Most recent day with samples for this POD/direction and its total kWh,
+    or None if there are none.
+
+    Days are counted in 'fuso' (Italian time, the days E-Distribuzione
+    publishes), from local midnight to local midnight: 23 or 25 hours on the
+    days of the clock change.
+    """
+    con = _connetti(db_path)
+    try:
+        (ultimo,) = con.execute(
+            "SELECT MAX(timestamp_utc) FROM campioni WHERE pod = ? AND direzione = ?",
+            (pod, direzione),
+        ).fetchone()
+        if ultimo is None:
+            return None
+        giorno = datetime.fromtimestamp(ultimo, tz=fuso).date()
+        inizio = datetime.combine(giorno, time.min, tzinfo=fuso)
+        fine = datetime.combine(giorno + timedelta(days=1), time.min, tzinfo=fuso)
+        (totale,) = con.execute(
+            "SELECT SUM(kwh) FROM campioni WHERE pod = ? AND direzione = ? "
+            "AND timestamp_utc >= ? AND timestamp_utc < ?",
+            (pod, direzione, int(inizio.timestamp()), int(fine.timestamp())),
+        ).fetchone()
+    finally:
+        con.close()
+    return giorno, float(totale or 0.0)

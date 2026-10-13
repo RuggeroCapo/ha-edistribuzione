@@ -1,8 +1,8 @@
-"""Traduzioni italiano/inglese: translations/*.json e testi.py.
+"""Italian/English translations: translations/*.json and testi.py.
 
-Una chiave presente in una lingua e non nell'altra non rompe niente a
-runtime (HA ricade sull'inglese, o mostra la chiave grezza), quindi è
-proprio il tipo di errore che nessuno nota: questi test lo bloccano prima.
+A key present in one language and not in the other breaks nothing at runtime
+(HA falls back to English, or shows the raw key), so it is exactly the kind of
+mistake nobody notices: these tests catch it first.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from homeassistant.helpers.translation import async_get_translations
 
-from custom_components.edistribuzione import sensor, testi
+from custom_components.edistribuzione import config_flow, sensor, testi
 from custom_components.edistribuzione.const import DOMAIN, TIPO_POD_PRODUZIONE, TIPO_POD_SCAMBIO
 
 CARTELLA = Path(__file__).parent.parent / "custom_components" / DOMAIN
@@ -53,8 +53,8 @@ def test_nessuna_lineetta_lunga(lingua):
 
 
 def test_ogni_translation_key_del_codice_esiste():
-    """Le chiavi usate nel codice (sensori, eccezioni, selettori) devono
-    esistere nei file di traduzione, altrimenti la UI mostra la chiave."""
+    """The keys used in the code (sensors, exceptions, selectors) must exist
+    in the translation files, otherwise the UI shows the key."""
     sorgente = "\n".join(p.read_text(encoding="utf-8") for p in CARTELLA.glob("*.py"))
     usate = set(re.findall(r'translation_key="(\w+)"', sorgente))
     usate |= set(re.findall(r'_attr_translation_key = "(\w+)"', sorgente))
@@ -73,6 +73,39 @@ def test_ogni_translation_key_del_codice_esiste():
         | set(it["issues"])
     )
     assert usate, "nessuna translation_key trovata nel codice: regex da aggiornare"
+    assert usate <= definite, usate - definite
+
+
+def test_ogni_errore_e_motivo_dei_flussi_esiste():
+    """Errors and abort reasons of the config and options flows: a missing
+    key shows the raw key in the form instead of the message."""
+    sorgente = (CARTELLA / "config_flow.py").read_text(encoding="utf-8")
+    usate = set(re.findall(r'errors\["base"\] = "(\w+)"', sorgente))
+    usate |= set(re.findall(r'"base": "(\w+)"', sorgente))
+    usate |= set(re.findall(r'reason="(\w+)"', sorgente))
+    usate |= set(config_flow._ERRORI_RIFIUTO_LOGIN.values()) | {"login_rifiutato"}
+    it = _carica("it")
+    definite = (
+        set(it["config"]["error"])
+        | set(it["config"]["abort"])
+        | set(it["options"]["error"])
+        | set(it["options"]["abort"])
+    )
+    assert len(usate) > 20, "regex to update: too few keys found in config_flow.py"
+    assert usate <= definite, usate - definite
+
+
+def test_ogni_errore_dell_azione_esiste():
+    """Errors of the recupera_storico action raised through _errore() and the
+    coordinator's period check, including the keys built from the field name."""
+    sorgente = "\n".join(
+        (CARTELLA / nome).read_text(encoding="utf-8") for nome in ("__init__.py", "coordinator.py")
+    )
+    usate = set(re.findall(r'_?errore\(\s*"(\w+)"', sorgente))
+    usate |= set(re.findall(r'"(dispositivo_\w+)"', sorgente))
+    usate |= {f"{campo}_{esito}" for campo in ("data_da", "data_a") for esito in ("mancante", "non_valida")}
+    definite = set(_carica("it")["exceptions"])
+    assert {"pod_non_configurato", "intervallo_troppo_ampio"} <= usate, "regex to update"
     assert usate <= definite, usate - definite
 
 
@@ -95,7 +128,7 @@ def test_lingua_supportata(lingua, attesa):
     ("lingua", "nome"), [("it", "Prelievo ultimo giorno"), ("en", "Last day consumption")]
 )
 async def test_home_assistant_carica_i_nomi_tradotti(hass, lingua, nome):
-    """Il caricatore vero di HA, non solo il JSON: verifica percorso e
-    struttura dei file come li legge Home Assistant."""
+    """HA's real loader, not just the JSON: checks path and structure of the
+    files as Home Assistant reads them."""
     traduzioni = await async_get_translations(hass, lingua, "entity", {DOMAIN})
     assert traduzioni[f"component.{DOMAIN}.entity.sensor.prelievo_ultimo_giorno.name"] == nome

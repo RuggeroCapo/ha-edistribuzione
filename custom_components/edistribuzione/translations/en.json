@@ -26,20 +26,29 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password",
-      "cannot_connect": "Unable to reach E-Distribuzione",
+      "invalid_auth": "E-Distribuzione rejected the email or password (\"{messaggio}\"). Make sure you use the credentials of the E-Distribuzione customer area, the grid operator, not those of your energy supplier (for example Enel Energia): they are two different accounts. If the same credentials work on the official website, try again in a few minutes.",
+      "cannot_connect": "Home Assistant cannot reach E-Distribuzione. Check Home Assistant's internet connection and DNS, then try again.",
       "invalid_otp": "Wrong or expired OTP code. It must be the code sent by this setup: one generated on the website or in the app belongs to another login session and is always rejected.",
       "otp_mancante": "Enter the OTP code, or tick \"Request a new code\" to have a new one sent",
       "troppe_sessioni": "E-Distribuzione refused the login because the account has too many concurrent sessions open. Log out of the official app and website, wait a few minutes and try again: in this state no OTP code is sent.",
       "nessun_pod_selezionato": "Select at least one POD",
-      "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting."
+      "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting.",
+      "errore_tecnico_portale": "E-Distribuzione answered with a generic technical error (\"{messaggio}\") instead of checking the credentials: it does not mean your email or password are wrong. It usually depends on a portal disruption or on a limit on automated access. Try again later; if the error also shows on the official website, contact E-Distribuzione support.",
+      "account_bloccato": "E-Distribuzione reports that the account is locked or disabled (\"{messaggio}\"). Sign in on the official website to unlock it, for example by resetting the password, then try again here.",
+      "password_scaduta": "E-Distribuzione reports that the password has expired (\"{messaggio}\"). Change it on the official website, then sign in here with the new one.",
+      "login_rifiutato": "E-Distribuzione refused the sign-in with this message: \"{messaggio}\". If it is not clear what to do, open an issue on GitHub quoting the message.",
+      "app_bloccata": "E-Distribuzione is rejecting the official app's client the integration uses to sign in (\"app_blocked\" answer). It does not depend on your credentials and insisting now does not help: try again later.",
+      "risposta_inattesa": "E-Distribuzione gave an unexpected answer during sign-in ({messaggio}). It does not depend on your credentials: the portal may be under maintenance or may have changed. Try again later; if it keeps happening, open an issue on GitHub with the log attached.",
+      "errore_imprevisto": "Unexpected error during sign-in ({messaggio}). The details are in the Home Assistant log: try again, and if it happens again open an issue on GitHub with the log attached.",
+      "otp_formato": "The OTP code is made of digits only: check that you copied all of it, with no letters."
     },
     "abort": {
       "reauth_successful": "Credentials updated successfully",
       "no_pods_found": "No POD found for this account",
       "supplies_failed": "Unexpected error while retrieving the PODs from the account. Start the setup again from the beginning (login and OTP included).",
       "otp_exchange_failed": "The OTP code was accepted but completing the login failed. Start the setup again from the beginning (login and OTP included).",
-      "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting."
+      "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting.",
+      "app_bloccata": "After the OTP code, E-Distribuzione rejected the official app's client the integration uses to sign in (\"app_blocked\" answer). It does not depend on your credentials or on the code: try the setup again later."
     }
   },
   "options": {
@@ -86,9 +95,11 @@
       "nessun_pod": "There are no configured PODs to remove",
       "nessun_pod_selezionato": "Select at least one POD to add",
       "nessun_pod_da_aggiungere": "All the PODs on your account are already configured here",
-      "refresh_failed": "Unable to renew access to E-Distribuzione. Try again later; if the problem persists a new login may be needed (remove and set up the integration again).",
+      "refresh_failed": "Unable to renew access to E-Distribuzione ({errore}). Try again later.",
       "supplies_failed": "Unexpected error while retrieving the PODs from the account. Try again later.",
-      "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting."
+      "accesso_bloccato": "E-Distribuzione is currently blocking automated access with an anti-bot check, so the integration cannot sign in. It does not depend on your credentials: try again later, without insisting.",
+      "app_bloccata": "E-Distribuzione is rejecting the official app's client the integration uses to sign in (\"app_blocked\" answer). It does not depend on your credentials: try again later.",
+      "accesso_scaduto": "Access to E-Distribuzione has expired. Sign in again from the notice in Settings > Devices & services: PODs, options and history are kept."
     }
   },
   "entity": {
@@ -98,6 +109,27 @@
         "state_attributes": {
           "pods": {
             "name": "PODs"
+          }
+        }
+      },
+      "fascia_corrente": {
+        "name": "Current time band",
+        "state": {
+          "f1": "F1",
+          "f2": "F2",
+          "f3": "F3"
+        },
+        "state_attributes": {
+          "prossima_fascia": {
+            "name": "Next band",
+            "state": {
+              "f1": "F1",
+              "f2": "F2",
+              "f3": "F3"
+            }
+          },
+          "prossimo_cambio": {
+            "name": "Next change"
           }
         }
       },
@@ -157,11 +189,11 @@
         },
         "data_da": {
           "name": "Start date",
-          "description": "First day of the period to fetch."
+          "description": "First day of the period to fetch, as year-month-day (for example 2026-08-01)."
         },
         "data_a": {
           "name": "End date",
-          "description": "Last day of the period to fetch. Data is available with a one-day delay, so yesterday at the latest."
+          "description": "Last day of the period to fetch, as year-month-day. Data is available with a one-day delay, so yesterday at the latest."
         }
       }
     },
@@ -172,10 +204,10 @@
   },
   "exceptions": {
     "dispositivo_non_trovato": {
-      "message": "Device not found (device_id={device_id})."
+      "message": "No device with ID \"{device_id}\". Pick it from the menu in UI mode, or copy the ID from the address of the device page, after /config/devices/device/. E-Distribuzione devices: {disponibili}."
     },
     "dispositivo_senza_configurazione": {
-      "message": "The selected device does not belong to any active setup."
+      "message": "The E-Distribuzione setup of the device \"{nome}\" is not active: usually its last start could not sign in to E-Distribuzione. Check Settings > Devices & services > E-Distribuzione: there you find the reason and, if needed, the button to sign in again."
     },
     "nessuna_istanza": {
       "message": "No E-Distribuzione instance configured."
@@ -184,31 +216,77 @@
       "message": "POD '{pod}' is not configured on this instance. Configured PODs: {pods}."
     },
     "date_invertite": {
-      "message": "The start date ({data_da}) is after the end date ({data_a})."
+      "message": "The start date ({data_da}) is after the end date ({data_a}): you probably swapped them. Use data_da: \"{data_a}\" and data_a: \"{data_da}\"."
     },
     "data_fine_troppo_recente": {
-      "message": "The end date ({data_a}) is too recent: data is currently assumed to be available with at least a one-day delay, so up to {ultimo_utile} at the latest."
+      "message": "The end date ({data_a}) is too recent: E-Distribuzione publishes data with a one-day delay, so today you can go up to {ultimo_utile} at most. Use data_a: \"{ultimo_utile}\"."
     },
     "intervallo_troppo_ampio": {
-      "message": "A range of {giorni} days is too wide for a single request (courtesy limit: {massimo} days, about 6 months). Repeat the action over shorter periods."
+      "message": "The period from {data_da} to {data_a} is {giorni} days long: a single run covers {massimo} at most (about 6 months). Split it into several runs, the first one for example from {data_da} to {fine_prima_parte}."
     },
     "nessun_dato_importato": {
       "message": "No data imported for the period {data_da} - {data_a}. {dettagli}"
     },
     "refresh_token_fallito": {
-      "message": "Token refresh failed: {errore}"
+      "message": "Unable to renew access to E-Distribuzione ({errore}). The integration retries on its own at the next update."
     },
     "errore_import_pod": {
-      "message": "Error importing the period for POD {pod}: {errore}"
+      "message": "POD {pod} was not updated: {errore}. The missing days are requested again at the next update."
     },
     "accesso_bloccato": {
       "message": "E-Distribuzione is currently blocking automated access with an anti-bot check. Consumption data will update again as soon as access is available."
+    },
+    "dispositivo_mancante": {
+      "message": "Choose the device (device_id field). E-Distribuzione devices: {disponibili}."
+    },
+    "un_solo_dispositivo": {
+      "message": "Choose a single device: the \"E-Distribuzione\" one already fetches all the PODs of the setup. E-Distribuzione devices: {disponibili}."
+    },
+    "dispositivo_e_un_entita": {
+      "message": "\"{device_id}\" is an entity ID, not a device ID. Use the device ID: {disponibili}."
+    },
+    "dispositivo_e_un_pod": {
+      "message": "\"{valore}\" is the POD code, not the device ID. For this POD use device_id: {device_id}"
+    },
+    "dispositivo_altra_integrazione": {
+      "message": "The device \"{nome}\" does not belong to the E-Distribuzione integration. E-Distribuzione devices: {disponibili}."
+    },
+    "campo_sconosciuto": {
+      "message": "Unknown field: {campi}. The action only accepts device_id, data_da (start date) and data_a (end date)."
+    },
+    "data_da_mancante": {
+      "message": "The start date is missing (data_da field)."
+    },
+    "data_a_mancante": {
+      "message": "The end date is missing (data_a field)."
+    },
+    "data_da_non_valida": {
+      "message": "The start date (data_da) \"{valore}\" is not valid. Write it as year-month-day, for example data_da: \"{esempio}\"."
+    },
+    "data_a_non_valida": {
+      "message": "The end date (data_a) \"{valore}\" is not valid. Write it as year-month-day, for example data_a: \"{esempio}\"."
+    },
+    "data_inizio_troppo_recente": {
+      "message": "The start date ({data_da}) is too recent: E-Distribuzione publishes data with a one-day delay, so today the last available day is {ultimo_utile}."
+    },
+    "portale_non_raggiungibile": {
+      "message": "Home Assistant cannot reach E-Distribuzione to renew access ({errore}). Check the internet connection; the integration retries on its own at the next update."
+    },
+    "app_bloccata": {
+      "message": "E-Distribuzione is rejecting the official app's client the integration uses to sign in (\"app_blocked\" answer), so access cannot be renewed. It does not depend on your credentials: the integration retries on its own every hour."
+    },
+    "accesso_scaduto": {
+      "message": "Access to E-Distribuzione has expired or was revoked (for example after a password change). Sign in again from the notice in Settings > Devices & services: PODs, options and history are kept."
     }
   },
   "issues": {
     "accesso_bloccato": {
       "title": "E-Distribuzione is blocking automated access",
-      "description": "E-Distribuzione answers with an anti-bot check instead of granting access, so the integration cannot renew it and consumption data does not update. It does not depend on your setup or credentials, and the data already imported is kept. The integration retries on its own every hour and this notice disappears as soon as access is available again."
+      "description": "E-Distribuzione answers with an anti-bot check instead of granting access, so the integration cannot renew it and consumption data does not update. It does not depend on your setup or credentials, and the data already imported is kept. Do not remove the integration to set it up again: while the block lasts, the new sign-in is refused too. The integration retries on its own every hour and this notice disappears as soon as access is available again."
+    },
+    "app_bloccata": {
+      "title": "E-Distribuzione is refusing the integration's access",
+      "description": "E-Distribuzione answers \"app_blocked\" when access is renewed: one of its security rules is rejecting the official app's client the integration uses. It does not depend on your setup or credentials, and the data already imported is kept. Do not remove the integration to set it up again: the new sign-in goes through the same client and would be refused. The integration retries on its own every hour and this notice disappears as soon as access is available again."
     }
   }
 }

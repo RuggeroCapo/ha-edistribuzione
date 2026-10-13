@@ -1,21 +1,23 @@
-"""Test per auth.py: parsing HTML/regex e logica pura, nessuna chiamata di
-rete reale (solo sessioni finte in memoria).
+"""auth.py: HTML/regex parsing and pure logic, with no real network call
+(only fake in-memory sessions).
 
-auth.py di per sé non dipende da Home Assistant (solo aiohttp e libreria
-standard), ma __init__.py del pacchetto sì (importa homeassistant.config_entries).
-Per poterlo testare in isolamento (più veloce, e verificabile anche senza
-homeassistant installato) questo file carica const.py e auth.py DIRETTAMENTE
-via importlib, bypassando __init__.py - lo stesso trucco usato da
+auth.py itself does not depend on Home Assistant (only aiohttp and the
+standard library), but the package's __init__.py does (it imports
+homeassistant.config_entries). To test it in isolation (faster, and checkable
+even without homeassistant installed) this file loads const.py and auth.py
+DIRECTLY through importlib, bypassing __init__.py - the same trick used by
 scripts/verify_login.py.
 """
 from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
 
+import aiohttp
 import pytest
 
 PKG_DIR = Path(__file__).parent.parent / "custom_components" / "edistribuzione"
@@ -55,9 +57,8 @@ class TestEstraiFwuid:
         assert auth.AuthClient._estrai_fwuid(html) == "ABC123"
 
     def test_forma_percent_encoded(self):
-        """Confermato su una cattura reale: il fwuid è incorporato
-        percent-encoded nel path di un URL di bootstrap, non in una
-        variabile JS in chiaro."""
+        """Confirmed on a real capture: the fwuid is embedded percent-encoded
+        in the path of a bootstrap URL, not in a plain JS variable."""
         html = (
             '<script src="/PortaleClienti/s/sfsites/l/%7B%22mode%22%3A%22PROD%22'
             '%2C%22fwuid%22%3A%22XYZ789%22%2C%22loaded%22%3A%7B%7D%7D/app.js">'
@@ -84,9 +85,9 @@ class TestEstraiLoaded:
         )
 
     def test_forma_percent_encoded(self):
-        """Stesso blob percent-encoded di _estrai_fwuid: 'loaded' contiene un
-        riferimento alla versione del componente caricato, necessario perché
-        aura.context con 'loaded':{} vuoto viene rifiutato dal server
+        """Same percent-encoded blob as _estrai_fwuid: 'loaded' holds a
+        reference to the loaded component version, needed because an
+        aura.context with an empty 'loaded':{} is rejected by the server
         (AuraClientInputException)."""
         html = (
             "%22loaded%22%3A%7B%22APPLICATION%40markup%3A%2F%2Fsiteforce"
@@ -98,8 +99,8 @@ class TestEstraiLoaded:
         )
 
     def test_fallback_oggetto_vuoto_se_non_trovato(self):
-        """Non solleva errore: degrada a '{}' e lascia che sia il server a
-        segnalare il problema (già diagnosticato altrove)."""
+        """Raises no error: it degrades to '{}' and lets the server report the
+        problem (already diagnosed elsewhere)."""
         assert auth.AuthClient._estrai_loaded("<html>niente</html>") == "{}"
 
 
@@ -131,9 +132,9 @@ class TestEstraiUrlRedirectJs:
 
 
 class TestAnalizzaPaginaOtp:
-    """Il gruppo più importante: copre in particolare la regressione del
-    campo Richiedi_nuovo_OTP (checkbox vs hidden), che ha richiesto diversi
-    round di debug con dati reali per essere trovata."""
+    """The most important group: it covers in particular the regression of
+    the Richiedi_nuovo_OTP field (checkbox vs hidden), which took several
+    rounds of debugging with real data to find."""
 
     HTML_PAGINA_OTP = """
     <html><body>
@@ -167,10 +168,10 @@ class TestAnalizzaPaginaOtp:
         assert client._flow.view_state_csrf == "VSC000"
 
     def test_resend_field_e_il_campo_hidden_non_la_checkbox(self):
-        """L'estrazione deve prendere il campo nascosto
-        (element___hidden____Richiedi_nuovo_OTP), non la checkbox visibile:
-        sbagliando qui il server tratta ogni submit come un'ennesima
-        richiesta di reinvio invece che una convalida del codice."""
+        """The extraction must take the hidden field
+        (element___hidden____Richiedi_nuovo_OTP), not the visible checkbox:
+        getting it wrong, the server treats every submit as yet another
+        resend request instead of a code validation."""
         client = self._client()
         client._analizza_pagina_otp(self.HTML_PAGINA_OTP)
         assert client._flow.resend_field_name == (
@@ -179,17 +180,17 @@ class TestAnalizzaPaginaOtp:
         assert "input____Richiedi_nuovo_OTP" not in client._flow.resend_field_name
 
     def test_ordine_attributi_invertito_nel_tag(self):
-        """Il regex non deve assumere 'name' sempre prima di 'value' nel
-        tag: se l'ordine è invertito (value poi name), deve funzionare
-        comunque."""
+        """The regex must not assume 'name' always comes before 'value' in
+        the tag: with the order swapped (value then name), it must work
+        anyway."""
         html_invertito = (
             '<input type="hidden" value="VS_INVERTITO" '
             'name="com.salesforce.visualforce.ViewState" />'
         )
         client = self._client()
-        # Solo il primo campo è presente: l'estrazione del secondo fallirà,
-        # ma vogliamo verificare che il PRIMO sia stato letto correttamente
-        # nonostante l'ordine invertito degli attributi.
+        # Only the first field is there: extracting the second one will fail,
+        # but we want to check that the FIRST was read correctly despite the
+        # swapped order of the attributes.
         with pytest.raises(auth.ParsingError):
             client._analizza_pagina_otp(html_invertito)
         assert client._flow.view_state == "VS_INVERTITO"
@@ -200,9 +201,9 @@ class TestAnalizzaPaginaOtp:
             client._analizza_pagina_otp("<html><title>Sessione scaduta</title></html>")
 
     def test_cattura_anche_la_checkbox_di_reinvio(self):
-        """La checkbox visibile serve per il reinvio esplicito del codice
-        (async_resend_otp), dove riproduciamo il submit di un browser con la
-        casella spuntata - il campo hidden da solo non basta a rappresentarlo."""
+        """The visible checkbox is used for the explicit resend of the code
+        (async_resend_otp), where we reproduce a browser's submit with the box
+        ticked - the hidden field alone is not enough to represent it."""
         client = self._client()
         client._analizza_pagina_otp(self.HTML_PAGINA_OTP)
         assert client._flow.resend_checkbox_field_name == (
@@ -212,7 +213,7 @@ class TestAnalizzaPaginaOtp:
 
 # ---------------------------------------------------------------------------
 # _form_invio_iniziale / _form_richiedi_nuovo / _form_convalida
-# (i tre costruttori di payload del form OTP)
+# (the three payload builders of the OTP form)
 # ---------------------------------------------------------------------------
 
 
@@ -224,16 +225,16 @@ class TestCostruttoriFormOtp:
         return client
 
     def test_invio_iniziale_senza_codice_ne_flag_di_reinvio(self):
-        """Il primo submit serve solo a far spedire il codice: non deve
-        contenere né un OTP da convalidare né il flag di reinvio."""
+        """The first submit only makes the code be sent: it must contain
+        neither an OTP to validate nor the resend flag."""
         dati = self._client()._form_invio_iniziale()
         assert not [k for k in dati if "OTP_Input" in k]
         assert not [k for k in dati if "Richiedi_nuovo_OTP" in k]
         assert dati["com.salesforce.visualforce.ViewState"] == "VS123"
 
     def test_convalida_codice_manda_hidden_a_false(self):
-        """Con il flag di reinvio a 'true' il server tratterebbe la
-        convalida come un'ennesima richiesta di nuovo codice."""
+        """With the resend flag at 'true' the server would treat the
+        validation as yet another request for a new code."""
         dati = self._client()._form_convalida("12345")
         assert dati["thePage:j_id2:i:f:pb:d:element___input____OTP_Input"] == "12345"
         assert dati["thePage:j_id2:i:f:pb:d:element___hidden____Richiedi_nuovo_OTP"] == "false"
@@ -246,7 +247,7 @@ class TestCostruttoriFormOtp:
 
 
 # ---------------------------------------------------------------------------
-# Invio / reinvio del codice: conferma e limite di sessioni
+# Sending / resending the code: confirmation and session limit
 # ---------------------------------------------------------------------------
 
 
@@ -265,8 +266,8 @@ class _RispostaFinta:
 
 
 class _SessioneFinta:
-    """Minimo indispensabile per _async_post_form_otp: registra i dati
-    inviati e restituisce sempre la stessa pagina."""
+    """The bare minimum for _async_post_form_otp: records the data sent and
+    always returns the same page."""
 
     def __init__(self, body: str) -> None:
         self._body = body
@@ -300,19 +301,18 @@ class TestInvioOtp:
     async def test_invio_non_confermato_non_e_fatale_ma_viene_segnalato(
         self, caplog, monkeypatch, tmp_path
     ):
-        """Se la pagina non contiene nessuno dei messaggi di conferma noti il
-        flusso continua (la formulazione potrebbe essere solo diversa), ma
-        resta traccia nei log e il flag permette al config flow di
-        avvisare."""
-        # Il dump di debug viene scritto nella cwd: lo dirottiamo su tmp_path
-        # per non lasciare otp_send_debug.html dentro il repository.
+        """If the page contains none of the known confirmation messages the
+        flow goes on (the wording might just be different), but it is logged
+        and the flag lets the config flow warn the user."""
+        # The debug dump is written to the cwd: it is redirected to tmp_path so
+        # that otp_send_debug.html is not left inside the repository.
         monkeypatch.chdir(tmp_path)
         client, _ = _client_su_form_otp(TestAnalizzaPaginaOtp.HTML_PAGINA_OTP)
         await client._async_avvia_invio_otp()
         assert client.otp_invio_confermato is False
         assert "non ha confermato l'invio" in caplog.text
-        # Il dump e' scritto in un executor (per non bloccare l'event loop
-        # di Home Assistant), quindi puo' non esistere ancora al ritorno.
+        # The dump is written in an executor (not to block Home Assistant's event
+        # loop), so it may not exist yet on return.
         dump = tmp_path / "otp_send_debug.html"
         for _ in range(50):
             if dump.exists():
@@ -321,9 +321,9 @@ class TestInvioOtp:
         assert dump.exists()
 
     async def test_pagina_limite_sessioni_solleva_eccezione_dedicata(self, monkeypatch, tmp_path):
-        """Con troppe sessioni aperte nessun codice viene spedito: va
-        distinto da un OTP sbagliato o da un cambio di markup, altrimenti
-        l'utente resta ad aspettare un codice che non arriverà mai."""
+        """With too many open sessions no code is sent: it must be told apart
+        from a wrong OTP or a markup change, otherwise the user is left waiting
+        for a code that will never arrive."""
         monkeypatch.chdir(tmp_path)
         client, _ = _client_su_form_otp(
             "<html><body>Hai superato il numero di sessioni simultanee "
@@ -347,14 +347,14 @@ class TestInvioOtp:
 
 
 # ---------------------------------------------------------------------------
-# Schermata di consenso OAuth
+# OAuth consent screen
 # ---------------------------------------------------------------------------
 
 
-# Struttura ricalcata sulla pagina reale: titolo "Consentire l'accesso?", un
-# solo form con 8 campi hidden e DUE pulsanti submit con lo stesso
-# name="save", distinguibili solo per il valore - "Consenti" approva, " Nega "
-# (con gli spazi) rifiuta.
+# Structure modelled on the real page: title "Consentire l'accesso?", a
+# single form with 8 hidden fields and TWO submit buttons with the same
+# name="save", told apart only by the value - "Consenti" approves, " Nega "
+# (with the spaces) rejects.
 HTML_PAGINA_CONSENSO = """
 <html><head><title>Consentire l'accesso? | Portale Clienti</title></head>
 <body>
@@ -378,8 +378,8 @@ HTML_PAGINA_CONSENSO = """
 
 class TestFormConsenso:
     def test_seleziona_consenti_e_non_nega(self):
-        """I due pulsanti hanno lo stesso name: prendere quello sbagliato
-        significherebbe NEGARE l'autorizzazione all'integrazione."""
+        """The two buttons have the same name: taking the wrong one would mean
+        DENYING the integration's authorization."""
         action, dati = auth.AuthClient._estrai_form_consenso(HTML_PAGINA_CONSENSO)
         assert dati["save"] == "Consenti"
         assert action == (
@@ -387,9 +387,9 @@ class TestFormConsenso:
         )
 
     def test_rimanda_tutti_i_campi_hidden_deescapati(self):
-        """save_new_url e source sono URL pieni di parametri: se restano
-        escapati (&amp;) il server riceve valori diversi da quelli che ha
-        generato."""
+        """save_new_url and source are URLs full of parameters: if they stay
+        escaped (&amp;) the server receives values different from the ones it
+        generated."""
         _, dati = auth.AuthClient._estrai_form_consenso(HTML_PAGINA_CONSENSO)
         assert set(dati) == {
             "_CONFIRMATIONTOKEN",
@@ -405,8 +405,8 @@ class TestFormConsenso:
         assert dati["save_new_url"] == "/services/oauth2/approval?a=1&b=2&c=l'app"
 
     def test_pagina_senza_pulsante_di_consenso_ritorna_none(self):
-        """Su una pagina che non è una schermata di consenso il chiamante
-        deve poter proseguire col suo errore di parsing abituale."""
+        """On a page that is not a consent screen the caller must be able to
+        go on with its usual parsing error."""
         assert (
             auth.AuthClient._estrai_form_consenso(
                 "<html><body><form><input type='submit' name='x' value='Invia'>"
@@ -423,8 +423,8 @@ class _RispostaConLocation(_RispostaFinta):
 
 
 class _SessioneACoda:
-    """Restituisce le risposte in coda, una per chiamata (get o post), e
-    registra i payload inviati."""
+    """Returns the queued responses, one per call (get or post), and records
+    the payloads sent."""
 
     def __init__(self, risposte: list) -> None:
         self._risposte = list(risposte)
@@ -443,10 +443,9 @@ class _SessioneACoda:
 
 class TestApprovazioneConsenso:
     async def test_preme_consenti_e_recupera_il_codice(self):
-        """Dopo l'OTP arriva la schermata di consenso invece del codice;
-        premendo "Consenti" il codice arriva nel Location del redirect verso
-        lo schema custom dell'app (eneldist://), che aiohttp non può
-        seguire."""
+        """After the OTP the consent screen arrives instead of the code;
+        pressing "Consenti" the code arrives in the Location of the redirect to
+        the app's custom scheme (eneldist://), which aiohttp cannot follow."""
         session = _SessioneACoda([
             _RispostaConLocation(
                 "eneldist://redirect?code=CODICE_OK&state=S",
@@ -465,7 +464,7 @@ class TestApprovazioneConsenso:
 
 
 # ---------------------------------------------------------------------------
-# _verifica_non_troppe_sessioni (centralizzata: era duplicata in tre punti)
+# _verifica_non_troppe_sessioni (centralised: it was duplicated in three places)
 # ---------------------------------------------------------------------------
 
 
@@ -489,7 +488,7 @@ class TestVerificaNonTroppeSessioni:
 
 
 # ---------------------------------------------------------------------------
-# Gerarchia eccezioni
+# Exception hierarchy
 # ---------------------------------------------------------------------------
 
 
@@ -504,14 +503,14 @@ class TestGerarchiaEccezioni:
         assert issubclass(auth.ParsingError, auth.AuthError)
 
     def test_troppe_sessioni_e_sottoclasse_di_auth_error_ma_non_di_credenziali(self):
-        """Deve essere gestibile a parte: le credenziali sono corrette, è
-        l'account ad avere troppe sessioni aperte."""
+        """It must be handled on its own: the credentials are right, it is the
+        account that has too many open sessions."""
         assert issubclass(auth.TroppeSessioni, auth.AuthError)
         assert not issubclass(auth.TroppeSessioni, auth.InvalidCredentials)
 
 
 # ---------------------------------------------------------------------------
-# Verifica antibot di Imperva al posto delle pagine attese
+# Imperva's anti-bot check in place of the expected pages
 # ---------------------------------------------------------------------------
 
 PAGINA_ANTIBOT = (
@@ -537,8 +536,8 @@ class TestAccessoBloccato:
             auth._verifica_non_bloccato(pagina)
 
     def test_lo_script_di_imperva_in_una_pagina_normale_non_e_un_blocco(self):
-        """Imperva inserisce _Incapsula_Resource anche nelle pagine normali
-        di un sito protetto: da solo non deve bloccare un login valido."""
+        """Imperva also adds _Incapsula_Resource to the normal pages of a
+        protected site: on its own it must not block a valid login."""
         auth._verifica_non_bloccato(
             '<html><title>Login</title><script src="/_Incapsula_Resource?x=1"></script></html>'
         )
@@ -547,8 +546,8 @@ class TestAccessoBloccato:
         assert issubclass(auth.AccessoBloccato, auth.AuthError)
 
     async def test_refresh_bloccato_su_entrambi_gli_host(self):
-        """Primario e host diretto entrambi bloccati: si prova il primario, poi
-        il diretto, e solo allora si solleva AccessoBloccato."""
+        """Primary and direct host both blocked: the primary is tried, then
+        the direct one, and only then AccessoBloccato is raised."""
         session = _SessioneACoda([_RispostaToken(PAGINA_ANTIBOT), _RispostaToken(PAGINA_ANTIBOT)])
         with pytest.raises(auth.AccessoBloccato):
             await auth.AuthClient(session).async_refresh_access_token("rt")
@@ -556,8 +555,8 @@ class TestAccessoBloccato:
         assert host_provati == ["private.e-distribuzione.it", "edistribuzione.my.site.com"]
 
     async def test_refresh_fallback_sul_dominio_diretto(self):
-        """Primario bloccato, host diretto ok: il refresh riesce via il dominio
-        diretto, senza sollevare eccezioni."""
+        """Primary blocked, direct host fine: the refresh succeeds through the
+        direct domain, without raising."""
         session = _SessioneACoda(
             [_RispostaToken(PAGINA_ANTIBOT), _RispostaToken('{"access_token": "nuovo"}')]
         )
@@ -579,3 +578,159 @@ class TestAccessoBloccato:
         client, _ = _client_su_form_otp(PAGINA_ANTIBOT)
         with pytest.raises(auth.AccessoBloccato):
             await client._async_avvia_invio_otp()
+
+
+# ---------------------------------------------------------------------------
+# Login refusals: the portal's message decides the error shown
+# ---------------------------------------------------------------------------
+
+PAGINA_LOGIN = (
+    '<script>{"fwuid":"FW123","loaded":{"APPLICATION@markup://siteforce:'
+    'loginApp2":"APP123"}}</script>'
+)
+
+
+async def _invia_credenziali_con_risposta(body: str):
+    client = auth.AuthClient(_SessioneACoda([_RispostaToken(body)]))
+    return await client._invia_credenziali(
+        "utente@example.com",
+        "password",
+        PAGINA_LOGIN,
+        "/start",
+        "/PortaleClienti/login",
+        "https://private.e-distribuzione.it/PortaleClienti/login",
+    )
+
+
+class TestRifiutoLogin:
+    @pytest.mark.parametrize(
+        ("risposta", "eccezione", "messaggio"),
+        [
+            ("KO: Username non valido", "InvalidCredentials", "Username non valido"),
+            ("KO: Password errata", "InvalidCredentials", "Password errata"),
+            ("KO: Errore Tecnico", "ErroreTecnicoPortale", "Errore Tecnico"),
+            ("KO: Utente bloccato", "AccountBloccato", "Utente bloccato"),
+            ("KO: La password è scaduta", "PasswordScaduta", "La password è scaduta"),
+            ("KO: Servizio sospeso", "LoginRifiutato", "Servizio sospeso"),
+        ],
+    )
+    async def test_ogni_rifiuto_ha_la_sua_eccezione_con_il_messaggio(
+        self, risposta, eccezione, messaggio
+    ):
+        """Up to v0.6.0 every KO became "invalid email or password", even a
+        technical error of the portal (issues #3, #5, #6)."""
+        body = json.dumps({"actions": [{"state": "SUCCESS", "returnValue": risposta}]})
+        with pytest.raises(auth.LoginRifiutato) as errore:
+            await _invia_credenziali_con_risposta(body)
+        assert type(errore.value).__name__ == eccezione
+        assert errore.value.messaggio == messaggio
+
+    async def test_l_errore_tecnico_non_e_un_errore_di_credenziali(self):
+        body = '{"actions":[{"state":"SUCCESS","returnValue":"KO: Errore Tecnico"}]}'
+        with pytest.raises(auth.ErroreTecnicoPortale) as errore:
+            await _invia_credenziali_con_risposta(body)
+        assert not isinstance(errore.value, auth.InvalidCredentials)
+
+    async def test_troppe_sessioni_resta_un_caso_a_parte(self):
+        body = (
+            '{"actions":[{"state":"SUCCESS","returnValue":'
+            '"KO: Hai superato il numero di sessioni simultanee consentite"}]}'
+        )
+        with pytest.raises(auth.TroppeSessioni):
+            await _invia_credenziali_con_risposta(body)
+
+    async def test_risposta_aura_senza_esito_non_e_un_errore_di_credenziali(self):
+        """state ERROR and returnValue null: the controller did not even look
+        at the credentials, the framework rejected the request. It is an
+        unexpected answer, not "wrong password"."""
+        body = (
+            '{"actions":[{"state":"ERROR","returnValue":null,'
+            '"error":[{"message":"An internal server error has occurred"}]}]}'
+        )
+        with pytest.raises(auth.ParsingError, match="internal server error"):
+            await _invia_credenziali_con_risposta(body)
+
+    async def test_ok_restituisce_l_indirizzo_da_seguire(self):
+        body = '{"actions":[{"state":"SUCCESS","returnValue":"OK:https://private.e-distribuzione.it/fd"}]}'
+        assert await _invia_credenziali_con_risposta(body) == (
+            "https://private.e-distribuzione.it/fd"
+        )
+
+
+# ---------------------------------------------------------------------------
+# OAuth endpoint errors: client blocked, token expired, other
+# ---------------------------------------------------------------------------
+
+APP_BLOCKED = '{"error":"app_blocked","error_description":"this app is blocked by Transaction Security"}'
+INVALID_GRANT = '{"error":"invalid_grant","error_description":"expired access/refresh token"}'
+
+
+class TestErroriToken:
+    async def test_app_blocked_e_un_blocco_non_un_token_revocato(self):
+        session = _SessioneACoda([_RispostaToken(APP_BLOCKED, status=400)])
+        with pytest.raises(auth.AppBloccata) as errore:
+            await auth.AuthClient(session).async_refresh_access_token("rt")
+        assert not isinstance(errore.value, auth.TokenNonValido)
+        # On the main domain (no anti-bot) the other host is not tried: it is
+        # the client that is rejected, not the domain.
+        assert len(session.post_inviati) == 1
+
+    async def test_antibot_poi_app_blocked_sul_dominio_diretto(self):
+        """The case of issue #4: Imperva blocks the main domain and on the
+        direct host Salesforce rejects the OAuth client."""
+        session = _SessioneACoda(
+            [_RispostaToken(PAGINA_ANTIBOT), _RispostaToken(APP_BLOCKED, status=400)]
+        )
+        with pytest.raises(auth.AppBloccata):
+            await auth.AuthClient(session).async_refresh_access_token("rt")
+        host_provati = [u["url"].split("/")[2] for u in session.post_inviati]
+        assert host_provati == ["private.e-distribuzione.it", "edistribuzione.my.site.com"]
+
+    async def test_invalid_grant_e_un_token_non_valido(self):
+        session = _SessioneACoda([_RispostaToken(INVALID_GRANT, status=400)])
+        with pytest.raises(auth.TokenNonValido, match="expired access/refresh token"):
+            await auth.AuthClient(session).async_refresh_access_token("rt")
+
+    async def test_altri_errori_oauth_restano_generici(self):
+        session = _SessioneACoda([_RispostaToken('{"error":"invalid_client"}', status=400)])
+        with pytest.raises(auth.AuthError) as errore:
+            await auth.AuthClient(session).async_refresh_access_token("rt")
+        assert type(errore.value) is auth.AuthError
+        assert "invalid_client" in str(errore.value)
+
+    async def test_app_blocked_dopo_l_otp(self):
+        session = _SessioneACoda([_RispostaToken(APP_BLOCKED, status=400)])
+        with pytest.raises(auth.AppBloccata):
+            await auth.AuthClient(session)._async_exchange_code("codice")
+
+
+class _RispostaRedirect:
+    def __init__(self, location: str) -> None:
+        self.headers = {"Location": location}
+        self.url = aiohttp.client.URL("https://private.e-distribuzione.it/PortaleClienti/x")
+
+    def close(self) -> None:
+        pass
+
+
+class _SessioneRedirect:
+    def __init__(self, location: str) -> None:
+        self._location = location
+        self.get_eseguiti = 0
+
+    async def get(self, url, params=None, headers=None, allow_redirects=None):
+        self.get_eseguiti += 1
+        return _RispostaRedirect(self._location)
+
+
+class TestRedirectConErrore:
+    async def test_redirect_all_app_con_errore_diventa_l_eccezione_giusta(self):
+        """If the OAuth server refuses the request, it redirects to the app
+        (eneldist://) with error=...: before, a GET to that non-HTTP address was
+        attempted, with an obscure error."""
+        session = _SessioneRedirect(
+            "eneldist://redirect?error=app_blocked&error_description=blocked"
+        )
+        with pytest.raises(auth.AppBloccata):
+            await auth._get_following_redirects(session, "https://private.e-distribuzione.it/a")
+        assert session.get_eseguiti == 1

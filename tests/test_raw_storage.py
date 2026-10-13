@@ -1,15 +1,18 @@
-"""Test di raw_storage.py: parsing dei campioni a 15 minuti dalla risposta
-API, e upsert/lettura sul file SQLite (source of truth per POD/direzione).
+"""raw_storage.py: parsing the 15-minute samples from the API response, and
+upsert/read on the SQLite file (source of truth per POD/direction).
 
-Nessuna fixture 'hass' qui: ogni funzione prende un db_path esplicito, un
-semplice file in tmp_path basta per testarle in isolamento.
+No 'hass' fixture here: every function takes an explicit db_path, a plain file
+in tmp_path is enough to test them in isolation.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
+
+import pytest
 
 from custom_components.edistribuzione import raw_storage as rs
+from custom_components.edistribuzione.fasce import FUSO_ITALIA
 
 
 def _giorno(
@@ -19,7 +22,7 @@ def _giorno(
     *,
     frequenza: int = 15,
 ) -> dict:
-    """Un elemento della lista 'data' di querydailyloadprofile."""
+    """An element of querydailyloadprofile's 'data' list."""
     return {
         "readings": {
             "energyType": "A1",
@@ -34,8 +37,8 @@ def _giorno(
     }
 
 
-# 1 agosto 2026, ora legale (CEST, UTC+2): il campione id=1 cade a mezzanotte
-# locale, quindi initialSample è il 31 luglio alle 22:00 UTC.
+# August 1, 2026, daylight saving time (CEST, UTC+2): sample id=1 falls at
+# local midnight, so initialSample is July 31 at 22:00 UTC.
 AGOSTO = ("20260801", "2026-07-31T22:00:00.000+00:00")
 
 
@@ -45,10 +48,10 @@ def test_estrae_un_campione_per_ogni_valore_con_timestamp_corretto():
     campioni = rs.estrai_campioni([_giorno(*AGOSTO, [0.1, 0.2, 0.3, 0.4])])
     assert len(campioni) == 4
     ts0, kwh0 = campioni[0]
-    assert ts0.isoformat() == "2026-07-31T22:00:00+00:00"  # 00:00 locale
+    assert ts0.isoformat() == "2026-07-31T22:00:00+00:00"  # 00:00 local
     assert kwh0 == 0.1
     ts3, kwh3 = campioni[3]
-    assert ts3.isoformat() == "2026-07-31T22:45:00+00:00"  # 00:45 locale
+    assert ts3.isoformat() == "2026-07-31T22:45:00+00:00"  # 00:45 local
     assert kwh3 == 0.4
 
 
@@ -68,13 +71,13 @@ def test_piu_giorni_nella_stessa_risposta():
     assert sum(kwh for _, kwh in campioni) == 96.0 + 192.0
 
 
-# --- Cambio ora legale --------------------------------------------------------
+# --- Daylight saving time change ----------------------------------------------
 #
-# initialSample è un timestamp UTC assoluto, quindi il calcolo
-# initialSample + (id-1)*frequenza non ha bisogno di sapere nulla del DST.
+# initialSample is an absolute UTC timestamp, so the computation
+# initialSample + (id-1)*frequency needs to know nothing about DST.
 
 def test_giorno_lungo_di_ottobre_produce_100_campioni():
-    # 25/10/2026, fine ora legale: 25 ore locali = 100 campioni da 15 minuti
+    # 25/10/2026, end of daylight saving time: 25 local hours = 100 samples of 15 minutes
     campioni = rs.estrai_campioni(
         [_giorno("20261025", "2026-10-24T22:00:00.000+00:00", [1.0] * 100)]
     )
@@ -83,7 +86,7 @@ def test_giorno_lungo_di_ottobre_produce_100_campioni():
 
 
 def test_giorno_corto_di_marzo_produce_92_campioni():
-    # 29/03/2026, inizio ora legale: 23 ore locali = 92 campioni
+    # 29/03/2026, start of daylight saving time: 23 local hours = 92 samples
     campioni = rs.estrai_campioni(
         [_giorno("20260329", "2026-03-28T23:00:00.000+00:00", [1.0] * 92)]
     )
@@ -91,7 +94,7 @@ def test_giorno_corto_di_marzo_produce_92_campioni():
     assert sum(kwh for _, kwh in campioni) == 92.0
 
 
-# --- Robustezza ---------------------------------------------------------------
+# --- Robustness ---------------------------------------------------------------
 
 def test_campione_corrotto_viene_scartato_senza_perdere_il_resto(caplog):
     giorno = _giorno(*AGOSTO, [1.0, 2.0])
@@ -113,7 +116,7 @@ def test_initial_sample_non_parsabile_salta_il_giorno_e_non_solleva(caplog):
     with caplog.at_level(logging.WARNING):
         campioni = rs.estrai_campioni(giorni)
 
-    # Solo il secondo giorno è stato estratto
+    # Only the second day was extracted
     assert len(campioni) == 96
     assert "initialSample non parsabile" in caplog.text
 
@@ -142,8 +145,8 @@ def test_upsert_poi_lettura_ritorna_gli_stessi_campioni(tmp_path):
 
 
 def test_upsert_dello_stesso_timestamp_sovrascrive_non_duplica(tmp_path):
-    """Rettifica: E-Distribuzione restituisce un valore diverso per un
-    campione già importato - deve sostituirlo, non affiancarlo."""
+    """Correction: E-Distribuzione returns a different value for a sample
+    already imported - it must replace it, not sit beside it."""
     db = str(tmp_path / "curve.db")
     ts = _ts("2026-08-01T14:15:00+00:00")
 
@@ -207,3 +210,43 @@ def test_lettura_e_ordinata_per_timestamp_indipendentemente_dall_ordine_di_scrit
 def test_leggi_campioni_pod_inesistente_ritorna_lista_vuota(tmp_path):
     db = str(tmp_path / "curve.db")
     assert rs.leggi_campioni(db, "IT999E99999999", "A1") == []
+
+
+class TestKwhUltimoGiorno:
+    """Value of the "last day" sensors: the sum of the samples of the most
+    recent day, counted in Italian time like E-Distribuzione's days."""
+
+    def test_nessun_campione(self, tmp_path):
+        db = str(tmp_path / "curve.db")
+        assert rs.kwh_ultimo_giorno(db, "POD", "A1", FUSO_ITALIA) is None
+
+    def test_somma_solo_il_giorno_piu_recente(self, tmp_path):
+        db = str(tmp_path / "curve.db")
+        # July 31 and August 1, 96 samples each.
+        rs.upsert_campioni(
+            db, "POD", "A1", rs.estrai_campioni([_giorno("20260731", "2026-07-30T22:00:00.000+00:00", [0.5] * 96)])
+        )
+        rs.upsert_campioni(
+            db, "POD", "A1", rs.estrai_campioni([_giorno(*AGOSTO, [0.25] * 96)])
+        )
+        # Another direction and another POD are not added in.
+        rs.upsert_campioni(db, "POD", "A2", rs.estrai_campioni([_giorno(*AGOSTO, [9.0] * 96)]))
+        rs.upsert_campioni(db, "ALTRO", "A1", rs.estrai_campioni([_giorno(*AGOSTO, [9.0] * 96)]))
+
+        giorno, kwh = rs.kwh_ultimo_giorno(db, "POD", "A1", FUSO_ITALIA)
+        assert giorno == date(2026, 8, 1)
+        assert kwh == pytest.approx(24.0)
+
+    def test_giorno_del_cambio_dell_ora_ha_cento_campioni(self, tmp_path):
+        """October 25, 2026, back to standard time: the Italian day lasts 25
+        hours and has 100 samples, all of the same day."""
+        db = str(tmp_path / "curve.db")
+        rs.upsert_campioni(
+            db,
+            "POD",
+            "A1",
+            rs.estrai_campioni([_giorno("20261025", "2026-10-24T22:00:00.000+00:00", [0.1] * 100)]),
+        )
+        giorno, kwh = rs.kwh_ultimo_giorno(db, "POD", "A1", FUSO_ITALIA)
+        assert giorno == date(2026, 10, 25)
+        assert kwh == pytest.approx(10.0)

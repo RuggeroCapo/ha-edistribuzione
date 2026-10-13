@@ -9,12 +9,12 @@ __pycache__/
 .venv/
 venv/
 
-# Ambiente locale / credenziali
+# Local environment / credentials
 .env
 
-# File di debug generati da scripts/verify_login.py (mai committarli: alcuni
-# contengono dati personali - indirizzo, consumi - o, nel caso del token di
-# refresh, una credenziale vera e propria).
+# Debug files written by scripts/verify_login.py (never commit them: some
+# contain personal data - address, consumption - or, for the refresh token, an
+# actual credential).
 otp_page_debug.html
 otp_send_debug.html
 otp_submit_response_debug.html
@@ -23,9 +23,9 @@ daily_load_profile_debug.json
 magnitude_probe_debug.json
 refresh_token.txt
 
-# Database SQLite dei campioni a 15 minuti (raw_storage.py) - dati reali
-# dell'utente, mai committarlo. Creato di norma dentro la cartella di
-# configurazione di Home Assistant, non qui, ma per sicurezza se qualcuno
-# lo lancia da questa cartella durante un test manuale.
+# SQLite database of the 15-minute samples (raw_storage.py) - the user's real
+# data, never commit it. Normally created inside Home Assistant's configuration
+# folder, not here, but just in case someone runs it from this folder during a
+# manual test.
 edistribuzione_curve.db
 edistribuzione_curve.db-*

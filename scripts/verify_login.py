@@ -308,8 +308,13 @@ async def main() -> None:
         print("\n--- Invio email/password ---")
         try:
             await client.async_begin_login(email, password)
-        except auth.InvalidCredentials as exc:
-            print(f"Credenziali rifiutate: {exc}")
+        except auth.LoginRifiutato as exc:
+            # The portal's own message, whatever the kind: the same text the
+            # setup shows to the user.
+            print(f"Login rifiutato da E-Distribuzione ({type(exc).__name__}): {exc.messaggio}")
+            return
+        except auth.AppBloccata as exc:
+            print(f"E-Distribuzione rifiuta il client OAuth dell'app: {exc}")
             return
         except auth.TroppeSessioni as exc:
             print(

@@ -100,9 +100,11 @@ RITARDO_DATI_GIORNI = 1
 # per direction.
 GIORNI_RICONTROLLO = 3
 
-# Notice in Settings > Repairs when E-Distribuzione answers with the anti-bot
-# check instead of the token (see auth.AccessoBloccato).
+# Notices in Settings > Repairs when E-Distribuzione answers with the anti-bot
+# check instead of the token (see auth.AccessoBloccato), or rejects the OAuth
+# client the integration uses (see auth.AppBloccata).
 ISSUE_ACCESSO_BLOCCATO = "accesso_bloccato"
+ISSUE_APP_BLOCCATA = "app_bloccata"
 
 CONF_DATA_INSTALLAZIONE = "data_installazione"
 CONF_GIORNI_DA_RIPROVARE = "giorni_da_riprovare"

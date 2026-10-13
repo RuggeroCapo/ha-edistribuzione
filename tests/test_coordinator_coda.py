@@ -1,6 +1,6 @@
-"""Coda dei giorni da riprovare del coordinator (per-POD): abbandono a
-tempo (non a conteggio tentativi) e "giorno ricevuto se almeno una
-direzione lo ha restituito".
+"""The coordinator's queue of days to retry (per POD): dropped by time (not
+by number of attempts), and "day received if at least one direction returned
+it".
 """
 from __future__ import annotations
 
@@ -63,8 +63,8 @@ async def test_rimuovi_dalla_coda_lascia_intatti_gli_altri_pod(hass, make_edist_
 
 
 async def test_valore_non_data_degrada_a_oggi(hass, make_edist_coordinator):
-    """Un valore corrotto nelle opzioni persistite non deve far esplodere la
-    lettura della coda: si assume 'oggi' come data di primo inserimento."""
+    """A corrupted value in the stored data must not break reading the
+    queue: 'today' is assumed as the date it was first queued."""
     coordinator = make_edist_coordinator(
         pods=[POD_A], data={CONF_GIORNI_DA_RIPROVARE: {POD_A: {"2026-09-10": "non-una-data"}}}
     )

@@ -99,14 +99,32 @@ kept.
   and submit the form.
 - **Too many concurrent sessions?** Log out of the official app and website,
   wait a few minutes and try again.
-- **"E-Distribuzione is currently blocking automated access"?** E-Distribuzione
-  is answering with an anti-bot check instead of the login page. It does not
-  depend on your setup or credentials: try again later, without insisting.
-  Installations already set up show the same notice in **Settings →
-  Repairs**, and resume on their own once access works again.
+
+### If the sign-in fails
+
+When E-Distribuzione refuses the sign-in, the form quotes its own message
+and says whether your credentials are the problem:
+
+| Message | What to do |
+|---|---|
+| **E-Distribuzione rejected the email or password** | Use the credentials of the E-Distribuzione customer area, the grid operator, not those of your energy supplier (for example Enel Energia): they are two different accounts. |
+| **Generic technical error** | Not a credentials problem: the portal did not check them. Try again later; if the website shows the same error, contact E-Distribuzione. |
+| **Account locked or disabled**, **password expired** | Fix it on the official website, then sign in here again. |
+| **Blocking automated access** (anti-bot check) | Not a credentials problem. Try again later, without insisting. |
+| **Rejecting the official app's client** (`app_blocked`) | E-Distribuzione is refusing the client the integration signs in with. Not a credentials problem: try again later. |
+| **Unexpected answer** | The portal may be under maintenance or may have changed. If it keeps happening, open an issue with the log. |
+| **Cannot reach E-Distribuzione** | Check Home Assistant's internet connection and DNS. |
+
+Installations already set up show the two blocks in **Settings → Repairs**
+and resume on their own, retrying once an hour, as soon as access works
+again. **Do not remove the integration to set it up again while a block
+lasts**: the new sign-in is refused too. If access expires instead (for
+example after a password change), Home Assistant asks you to sign in again
+from **Settings → Devices & services**, keeping PODs, options and history.
 
 Other problems, or ideas? Please report them in the
-[issues](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues).
+[issues](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues),
+quoting the message shown.
 
 ### 2. Select the PODs
 
@@ -162,6 +180,13 @@ data:
   data_a: "2026-10-07"
 ```
 
+Dates are written as year-month-day; quotes are recommended but not
+required. If something is wrong, the error says what to change: swapped or
+too recent dates, a date in day/month/year format, a missing or misspelled
+field, or a `device_id` that is not right, for example a POD code or an
+entity ID in its place. Errors about the `device_id` list the IDs of the
+E-Distribuzione devices.
+
 ### Finding the `device_id`
 
 Go to **Developer tools → Template** and paste:
@@ -190,12 +215,14 @@ Assistant was not restarted after installing it.
 ### Action result
 
 A green check on the button means that at least one POD received data. A
-red message means that nothing was imported, and says why:
+red message means that nothing was imported, and says why and what to
+change:
 
-- no data available for the requested period;
-- end date too recent;
-- start date after the end date;
-- requested range too long.
+- start date after the end date, with the two dates swapped;
+- start or end date too recent, with the last day available;
+- requested range too long, with where to split it;
+- no data available for the requested period, or the data service not
+  answering, for each POD.
 
 ### POD card and Energy Dashboard
 
@@ -222,8 +249,7 @@ The number of days received is logged at info level:
 
 > [!NOTE]
 > **Last available date** is not a reliable check for a history import: it
-> shows the most recent day, which was usually there already, and updates
-> on the next hourly cycle.
+> shows the most recent day, which was usually there already.
 
 With several PODs the action succeeds as long as at least one of them
 received data. PODs that failed show up as warnings in **Settings → System
@@ -243,6 +269,30 @@ show the most recent imported day and its values.
 |---|---|
 | Exchange | Last available date, Last day consumption, Last day return to grid |
 | Production | Last available date, Last day production, Last day consumption (technical) |
+
+The values are read from the data already imported, so they stay available
+between one daily request and the next, after a restart and while
+E-Distribuzione cannot be reached; the **Day** attribute says which day they
+refer to. A direction the meter never measured, such as the return to grid
+without solar panels, shows 0 kWh instead of staying unknown.
+
+### Current time band
+
+The **E-Distribuzione** device also has a **Current time band** sensor, with
+the ARERA band in force now (`f1`, `f2` or `f3`, shown as F1, F2, F3) and the
+**Next band** and **Next change** attributes. It is calculated locally with
+the same calendar as the [F1/F2/F3 statistics](#f1--f2--f3-time-bands)
+(Italian time, national holidays included), changes state exactly at each
+boundary and works even when E-Distribuzione cannot be reached. Use it in
+automations, for example to start appliances in F3:
+
+```yaml
+triggers:
+  - trigger: state
+    # sensor.e_distribuzione_fascia_oraria_corrente on an Italian server
+    entity_id: sensor.e_distribuzione_current_time_band
+    to: f3
+```
 
 ## Energy Dashboard
 
@@ -350,6 +400,12 @@ editor.
 1. Open a dashboard and select **Edit dashboard** (pencil).
 2. Select **Add card** and search for **E-Distribuzione · POD**.
 3. Add and save the card. With no options it shows the first POD found.
+
+With no data yet, or with only the few days imported right after setup, the
+card says so and offers a **Fetch history** button, which opens the action
+already selected (administrators only). The notice about a short history
+can be closed, and disappears on its own once there is more than a month of
+data.
 
 ### If the card shows an error
 

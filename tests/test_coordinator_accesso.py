@@ -1,23 +1,32 @@
-"""Rinnovo del token bloccato dalla verifica antibot di E-Distribuzione:
-errore tradotto e avviso in Impostazioni > Riparazioni, che sparisce da solo
-quando l'accesso torna."""
+"""Token refresh: blocked by E-Distribuzione (anti-bot check or OAuth client
+rejected), with a translated error and a notice in Settings > Repairs that goes
+away on its own once access is back; expired, with a request to sign in
+again."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import aiohttp
 import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.edistribuzione.auth import AccessoBloccato, AuthError
+from custom_components.edistribuzione.auth import (
+    AccessoBloccato,
+    AppBloccata,
+    AuthError,
+    TokenNonValido,
+)
 from custom_components.edistribuzione.const import (
     CONF_PODS,
     CONF_REFRESH_TOKEN,
     DOMAIN,
     ISSUE_ACCESSO_BLOCCATO,
+    ISSUE_APP_BLOCCATA,
 )
 
 from .conftest import POD_A
@@ -48,8 +57,65 @@ async def test_token_bloccato_avvisa_e_l_avviso_sparisce_quando_torna(
     assert coordinator.entry.data["refresh_token"] == "rt"
 
 
+async def test_client_rifiutato_avvisa_senza_chiedere_un_nuovo_login(
+    hass, make_edist_coordinator
+):
+    """Issue #4: "app_blocked" on refresh. A new login goes through the same
+    client and would be refused: dedicated notice, token kept, no reauth."""
+    coordinator = make_edist_coordinator()
+    registro = ir.async_get(hass)
+
+    coordinator._auth.async_refresh_access_token = AsyncMock(
+        side_effect=AppBloccata("app_blocked")
+    )
+    with pytest.raises(UpdateFailed) as errore:
+        await coordinator._async_ensure_token()
+    assert errore.value.translation_key == "app_bloccata"
+    assert coordinator.accesso_bloccato
+    assert registro.async_get_issue(DOMAIN, ISSUE_APP_BLOCCATA) is not None
+    assert coordinator.entry.data[CONF_REFRESH_TOKEN] == "rt"
+
+    # The block changes kind: only one notice is left, the right one.
+    coordinator._auth.async_refresh_access_token = AsyncMock(
+        side_effect=AccessoBloccato("antibot")
+    )
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_ensure_token()
+    assert registro.async_get_issue(DOMAIN, ISSUE_APP_BLOCCATA) is None
+    assert registro.async_get_issue(DOMAIN, ISSUE_ACCESSO_BLOCCATO) is not None
+
+    coordinator._auth.async_refresh_access_token = AsyncMock(
+        return_value=SimpleNamespace(access_token="nuovo", refresh_token="rt")
+    )
+    await coordinator._async_ensure_token()
+    assert not coordinator.accesso_bloccato
+    assert registro.async_get_issue(DOMAIN, ISSUE_ACCESSO_BLOCCATO) is None
+    assert registro.async_get_issue(DOMAIN, ISSUE_APP_BLOCCATA) is None
+
+
+async def test_token_scaduto_chiede_un_nuovo_login(hass, make_edist_coordinator):
+    coordinator = make_edist_coordinator()
+    coordinator._auth.async_refresh_access_token = AsyncMock(
+        side_effect=TokenNonValido("invalid_grant")
+    )
+    with pytest.raises(ConfigEntryAuthFailed) as errore:
+        await coordinator._async_ensure_token()
+    assert errore.value.translation_key == "accesso_scaduto"
+
+
+async def test_portale_non_raggiungibile_ha_un_messaggio_suo(hass, make_edist_coordinator):
+    coordinator = make_edist_coordinator()
+    coordinator._auth.async_refresh_access_token = AsyncMock(
+        side_effect=aiohttp.ClientConnectionError("dns")
+    )
+    with pytest.raises(UpdateFailed) as errore:
+        await coordinator._async_ensure_token()
+    assert errore.value.translation_key == "portale_non_raggiungibile"
+    assert errore.value.translation_placeholders == {"errore": "ClientConnectionError"}
+
+
 async def _setup_con_rinnovo(hass, effetto):
-    """Setup completo dell'integrazione con il rinnovo del token simulato."""
+    """Full setup of the integration with a simulated token refresh."""
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_REFRESH_TOKEN: "rt", CONF_PODS: [POD_A]}, title=POD_A
     )
@@ -63,9 +129,9 @@ async def _setup_con_rinnovo(hass, effetto):
 
 
 async def test_setup_bloccato_si_completa_senza_tentativi_ravvicinati(hass):
-    """Con il blocco antibot all'avvio il setup non va in SETUP_RETRY, che
-    ripeterebbe la richiesta fino a ogni 10 minuti: si completa e il
-    coordinator riprova al suo ritmo orario."""
+    """With the anti-bot block at startup the setup does not go into
+    SETUP_RETRY, which would repeat the request as often as every 10 minutes:
+    it completes and the coordinator retries at its hourly rate."""
     entry, auth = await _setup_con_rinnovo(hass, AccessoBloccato("antibot"))
     assert entry.state is ConfigEntryState.LOADED
     assert auth.async_refresh_access_token.await_count == 1
@@ -75,15 +141,33 @@ async def test_setup_bloccato_si_completa_senza_tentativi_ravvicinati(hass):
     assert coordinator.update_interval.total_seconds() == 3600
 
 
+async def test_client_rifiutato_all_avvio_completa_il_setup(hass):
+    entry, auth = await _setup_con_rinnovo(hass, AppBloccata("app_blocked"))
+    assert entry.state is ConfigEntryState.LOADED
+    assert auth.async_refresh_access_token.await_count == 1
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_APP_BLOCCATA) is not None
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+
+
+async def test_token_scaduto_all_avvio_apre_la_riautenticazione(hass):
+    entry, _ = await _setup_con_rinnovo(hass, TokenNonValido("invalid_grant"))
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    flussi = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [f["context"]["source"] for f in flussi] == ["reauth"]
+    assert entry.entry_id not in hass.data.get(DOMAIN, {})
+
+
 async def test_altri_errori_all_avvio_restano_un_nuovo_tentativo_di_setup(hass):
-    entry, _ = await _setup_con_rinnovo(hass, AuthError("refresh_token revocato"))
+    entry, _ = await _setup_con_rinnovo(hass, AuthError("errore 500"))
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ACCESSO_BLOCCATO) is None
+    # No coordinator left behind for a setup that did not happen.
+    assert entry.entry_id not in hass.data.get(DOMAIN, {})
 
 
 async def test_avviso_ignorato_ricompare_al_ricaricamento_se_il_blocco_continua(hass):
-    """HA lascia nascosto un avviso ignorato anche se viene ricreato: dopo
-    un ricaricamento con l'accesso ancora bloccato deve tornare visibile."""
+    """HA keeps an ignored notice hidden even when it is recreated: after a
+    reload with access still blocked it must be visible again."""
     entry, auth = await _setup_con_rinnovo(hass, AccessoBloccato("antibot"))
     registro = ir.async_get(hass)
     ir.async_ignore_issue(hass, DOMAIN, ISSUE_ACCESSO_BLOCCATO, True)

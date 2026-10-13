@@ -22,7 +22,9 @@ recupera_storico:
             integration: edistribuzione
     data_da:
       name: Data inizio
-      description: Primo giorno del periodo da recuperare.
+      description: >-
+        Primo giorno del periodo da recuperare, come anno-mese-giorno (ad
+        esempio 2026-08-01).
       required: true
       example: "2026-08-01"
       selector:
@@ -30,8 +32,8 @@ recupera_storico:
     data_a:
       name: Data fine
       description: >-
-        Ultimo giorno del periodo da recuperare. I dati sono disponibili con
-        un giorno di ritardo, quindi al massimo ieri.
+        Ultimo giorno del periodo da recuperare, come anno-mese-giorno. I dati
+        sono disponibili con un giorno di ritardo, quindi al massimo ieri.
       required: true
       example: "2026-08-31"
       selector:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -24,10 +25,16 @@ from homeassistant.helpers.aiohttp_client import (
 from .api import ApiClient
 from .auth import (
     AccessoBloccato,
+    AccountBloccato,
+    AppBloccata,
     AuthClient,
+    ErroreTecnicoPortale,
     InvalidCredentials,
     InvalidOtp,
+    LoginRifiutato,
     ParsingError,
+    PasswordScaduta,
+    TokenNonValido,
     TroppeSessioni,
 )
 from .const import (
@@ -52,6 +59,23 @@ STEP_OTP_SCHEMA = vol.Schema({
     vol.Optional("otp", default=""): str,
     vol.Optional("richiedi_nuovo_codice", default=False): bool,
 })
+
+
+# Error of the user step for each kind of login refusal. Each one also shows
+# the portal's own message ({messaggio}): an unknown refusal still says what
+# E-Distribuzione answered (see auth.LoginRifiutato).
+_ERRORI_RIFIUTO_LOGIN: dict[type[LoginRifiutato], str] = {
+    InvalidCredentials: "invalid_auth",
+    ErroreTecnicoPortale: "errore_tecnico_portale",
+    AccountBloccato: "account_bloccato",
+    PasswordScaduta: "password_scaduta",
+}
+
+
+def _descrivi_eccezione(err: Exception) -> str:
+    """Short technical detail for the "unexpected error" messages."""
+    testo = str(err).strip()
+    return f"{type(err).__name__}: {testo}"[:200] if testo else type(err).__name__
 
 
 def _etichetta_pod(pod_info: dict) -> str:
@@ -143,6 +167,7 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
+        messaggio = ""
 
         if user_input is not None:
             # Dedicated session (not Home Assistant's shared one): this login
@@ -156,9 +181,13 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._auth = AuthClient(self._session)
 
             try:
-                await self._auth.async_begin_login(user_input["email"], user_input["password"])
-            except InvalidCredentials:
-                errors["base"] = "invalid_auth"
+                # A space copied along with the address is never part of it.
+                await self._auth.async_begin_login(
+                    user_input["email"].strip(), user_input["password"]
+                )
+            except LoginRifiutato as err:
+                errors["base"] = _ERRORI_RIFIUTO_LOGIN.get(type(err), "login_rifiutato")
+                messaggio = err.messaggio
             except TroppeSessioni:
                 # Right credentials, but the account has too many open sessions:
                 # no OTP is sent, so there is no point moving to the next step to
@@ -170,16 +199,25 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # expected fields, but the problem is not a markup change.
                 _LOGGER.warning("Login: E-Distribuzione ha risposto con la verifica antibot")
                 errors["base"] = "accesso_bloccato"
-            except ParsingError:
+            except AppBloccata as err:
+                _LOGGER.warning("Login: E-Distribuzione blocca il client OAuth (%s)", err)
+                errors["base"] = "app_bloccata"
+            except ParsingError as err:
+                # A page or answer different from the expected one: maintenance,
+                # or a change on the portal. Not the credentials.
                 _LOGGER.exception("Parsing della pagina di login fallito")
+                errors["base"] = "risposta_inattesa"
+                messaggio = _descrivi_eccezione(err)
+            except (aiohttp.ClientError, TimeoutError):
+                _LOGGER.exception("E-Distribuzione non raggiungibile durante il login")
                 errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001 - any other unexpected error
-                # aiohttp.ClientError, timeout, a non-JSON response where one was
-                # expected, or anything else auth.py does not wrap in its
-                # dedicated exceptions: better an error in the form (with the
-                # traceback in the logs) than blowing up the step.
+            except Exception as err:  # noqa: BLE001 - any other unexpected error
+                # Anything auth.py does not wrap in its dedicated exceptions:
+                # better an error in the form (with the traceback in the logs)
+                # than blowing up the step.
                 _LOGGER.exception("Errore imprevisto durante il login")
-                errors["base"] = "cannot_connect"
+                errors["base"] = "errore_imprevisto"
+                messaggio = _descrivi_eccezione(err)
             else:
                 return await self.async_step_otp()
 
@@ -187,7 +225,10 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({vol.Required("email"): str, vol.Required("password"): str}),
             errors=errors,
-            description_placeholders={"pod_correnti": self._nota_reauth()},
+            description_placeholders={
+                "pod_correnti": self._nota_reauth(),
+                "messaggio": messaggio,
+            },
         )
 
     def _nota_reauth(self) -> str:
@@ -207,8 +248,14 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if form_senza_codice is not None:
                 return form_senza_codice
 
+            # Checked here, before using up an attempt on the portal: the code
+            # is made of digits only, often pasted with spaces in between.
+            codice = user_input["otp"].replace(" ", "")
+            if not codice.isdigit():
+                return self._form_otp({"base": "otp_formato"}, avviso)
+
             try:
-                tokens = await self._auth.async_submit_otp(user_input["otp"])
+                tokens = await self._auth.async_submit_otp(codice)
             except InvalidOtp:
                 errors["base"] = "invalid_otp"
             except TroppeSessioni:
@@ -216,6 +263,9 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except AccessoBloccato:
                 _LOGGER.warning("Convalida OTP: E-Distribuzione ha risposto con la verifica antibot")
                 return self.async_abort(reason="accesso_bloccato")
+            except AppBloccata as err:
+                _LOGGER.warning("Convalida OTP: E-Distribuzione blocca il client OAuth (%s)", err)
+                return self.async_abort(reason="app_bloccata")
             except ParsingError:
                 # At this point the OTP has already been accepted by Salesforce
                 # (otherwise we would have caught InvalidOtp above): the failure
@@ -397,9 +447,20 @@ class EdistribuzioneOptionsFlow(config_entries.OptionsFlow):
         except AccessoBloccato:
             _LOGGER.warning("Opzioni: E-Distribuzione ha risposto con la verifica antibot")
             return self.async_abort(reason="accesso_bloccato")
-        except Exception:  # noqa: BLE001
+        except AppBloccata as err:
+            _LOGGER.warning("Opzioni: E-Distribuzione blocca il client OAuth (%s)", err)
+            return self.async_abort(reason="app_bloccata")
+        except TokenNonValido:
+            # Same reaction as the coordinator: ask for a new login, which
+            # keeps PODs, options and history.
+            self.config_entry.async_start_reauth(self.hass)
+            return self.async_abort(reason="accesso_scaduto")
+        except Exception as err:  # noqa: BLE001
             _LOGGER.exception("Refresh del token fallito nelle opzioni")
-            return self.async_abort(reason="refresh_failed")
+            return self.async_abort(
+                reason="refresh_failed",
+                description_placeholders={"errore": _descrivi_eccezione(err)},
+            )
 
         api = ApiClient(session, tokens.access_token)
         try:

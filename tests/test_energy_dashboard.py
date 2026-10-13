@@ -1,8 +1,8 @@
-"""Configurazione idempotente della Energy Dashboard.
+"""Idempotent Energy Dashboard configuration.
 
-async_configura_energy_dashboard non deve mai sovrascrivere né duplicare
-sorgenti esistenti - né quelle create da lei in una chiamata precedente, né
-quelle che l'utente ha configurato a mano per altri scopi (es. il gas).
+async_configura_energy_dashboard must never overwrite or duplicate existing
+sources - neither those it created in a previous call, nor those the user set
+up by hand for other purposes (e.g. gas).
 """
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from custom_components.edistribuzione.energy_dashboard import async_configura_en
 
 
 class _CoordinatorFinto:
-    """Solo ciò che async_configura_energy_dashboard usa davvero: pods e
-    tipo_pod - non serve un EdistribuzioneCoordinator vero, con sessioni
-    aiohttp e config entry, per testare questa sola funzione."""
+    """Only what async_configura_energy_dashboard really uses: pods and
+    tipo_pod - a real EdistribuzioneCoordinator, with aiohttp sessions and a
+    config entry, is not needed to test this one function."""
 
     def __init__(self, pods: list[str], ruoli: dict[str, str]) -> None:
         self.pods = pods
@@ -59,8 +59,8 @@ async def test_idempotente_non_duplica_se_richiamata_due_volte(hass):
 
 
 async def test_non_tocca_sorgenti_esistenti_non_correlate(hass):
-    """Una sorgente gas configurata a mano dall'utente deve restare intatta
-    dopo aver aggiunto quelle di questa integrazione."""
+    """A gas source set up by hand by the user must stay untouched after
+    adding this integration's ones."""
     manager = await async_get_manager(hass)
     await manager.async_update({
         "energy_sources": [{"type": "gas", "stat_energy_from": "sensor.gas_casa"}]
@@ -78,9 +78,9 @@ async def test_non_tocca_sorgenti_esistenti_non_correlate(hass):
 
 
 async def test_non_riaggiunge_una_sorgente_grid_configurata_a_mano(hass):
-    """Se l'utente ha già collegato la prelevata di questo POD a una
-    sorgente grid a mano (magari con un costo configurato), l'azione non
-    deve crearne una seconda identica."""
+    """If the user already linked this POD's consumption to a grid source by
+    hand (maybe with a cost configured), the action must not create a second,
+    identical one."""
     manager = await async_get_manager(hass)
     await manager.async_update({
         "energy_sources": [{

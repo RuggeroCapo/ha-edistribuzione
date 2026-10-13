@@ -1,32 +1,38 @@
 /*
  * E-Distribuzione POD card
  *
- * Servita dall'integrazione stessa (vedi lovelace_card.py): nessuna risorsa
- * da aggiungere a mano. Legge le external statistics scritte da
- * statistics.py tramite il websocket del Recorder, le stesse che usa la
- * Energy Dashboard.
+ * Served by the integration itself (see lovelace_card.py): no resource to
+ * add by hand. It reads the external statistics written by statistics.py
+ * through the Recorder websocket, the same ones the Energy Dashboard uses.
  *
- * Il linguaggio visivo ricalca quello nativo di Home Assistant, usando i suoi
- * token invece di valori propri:
- *   - intestazione come la tile card (icona 36px con fondo al 20%);
- *   - selettore del periodo come ha-control-select;
- *   - grafico come le card energia: barre impilate col riempimento al 50% e
- *     bordo pieno da 1.5px, una sfumatura LAB di
- *     --energy-grid-consumption-color per ogni fascia (lo stesso algoritmo
- *     con cui la Energy Dashboard distingue più contatori della rete),
- *     immissione in negativo con --energy-grid-return-color;
- *   - tooltip, griglia ed etichette con i colori del tema ECharts di HA.
+ * The look follows Home Assistant's own, using its tokens instead of values
+ * of its own:
+ *   - header like the tile card (36px icon on a 20% background);
+ *   - period selector like ha-control-select;
+ *   - chart like the energy cards: stacked bars with a 50% fill and a solid
+ *     1.5px border, one LAB shade of --energy-grid-consumption-color per band
+ *     (the same algorithm the Energy Dashboard uses to tell several grid
+ *     meters apart), injection below zero with --energy-grid-return-color;
+ *   - tooltip, grid and labels with the colours of HA's ECharts theme.
  *
- * Nessuna dipendenza: web component puro, un solo file.
+ * No dependencies: a plain web component, a single file.
  */
 
 const CARD_TYPE = "edistribuzione-pod-card";
 const EDITOR_TYPE = "edistribuzione-pod-card-editor";
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const SOURCE = "edistribuzione";
 const FASCE = ["f1", "f2", "f3"];
 const VISTE = ["day", "week", "month", "year"];
 const HOUR_MS = 3600000;
+const DAY_MS = 24 * HOUR_MS;
+// Below this much history the card suggests fetching it: right after setup
+// the integration imports only the last 3 days.
+const STORICO_BREVE_MS = 31 * DAY_MS;
+// Internal "My Home Assistant" redirects: they resolve to the right page on
+// every version (Developer tools moved under Settings in 2026).
+const URL_AZIONE_STORICO = "/_my_redirect/developer_call_service?service=edistribuzione.recupera_storico";
+const URL_CONFIGURA = "/_my_redirect/config_flow_start?domain=edistribuzione";
 
 const STRINGS = {
   it: {
@@ -46,7 +52,15 @@ const STRINGS = {
     previous: "Precedente",
     next: "Successivo",
     no_data: "Non ci sono dati per questo periodo.",
-    no_pod: "Nessun POD E-Distribuzione trovato. Configura l'integrazione e attendi il primo import.",
+    empty_title: "Ancora nessun dato",
+    empty_text: "Non ci sono ancora consumi importati da E-Distribuzione. Appena configurata, l'integrazione importa da sola gli ultimi giorni; per i periodi precedenti esegui l'azione «Recupera storico». Se non compare nulla, controlla Impostazioni > Riparazioni.",
+    not_configured_title: "Integrazione non configurata",
+    not_configured_text: "Aggiungi l'integrazione E-Distribuzione per vedere qui i consumi del tuo POD.",
+    history_title: "Storico non ancora scaricato",
+    history_text: "Ci sono dati solo dal {date}. Lo storico non si scarica in automatico: per vedere i mesi precedenti esegui l'azione «Recupera storico».",
+    ask_admin: "Chiedi a un amministratore di eseguirla.",
+    fetch_history: "Recupera storico",
+    configure: "Configura",
     load_error: "Impossibile leggere le statistiche: {error}",
     chart_label: "{period}: prelievo {withdrawn}",
     ed_pod: "POD",
@@ -72,7 +86,15 @@ const STRINGS = {
     previous: "Previous",
     next: "Next",
     no_data: "There is no data for this period.",
-    no_pod: "No E-Distribuzione POD found. Configure the integration and wait for the first import.",
+    empty_title: "No data yet",
+    empty_text: "No consumption has been imported from E-Distribuzione yet. Right after setup the integration imports the last few days on its own; for earlier periods run the \"Fetch history\" action. If nothing shows up, check Settings > Repairs.",
+    not_configured_title: "Integration not set up",
+    not_configured_text: "Add the E-Distribuzione integration to see your POD's consumption here.",
+    history_title: "History not downloaded yet",
+    history_text: "Data is only available from {date}. History is not downloaded automatically: to see earlier months, run the \"Fetch history\" action.",
+    ask_admin: "Ask an administrator to run it.",
+    fetch_history: "Fetch history",
+    configure: "Set up",
     load_error: "Unable to read statistics: {error}",
     chart_label: "{period}: consumption {withdrawn}",
     ed_pod: "POD",
@@ -94,15 +116,38 @@ const traduci = (hass, key, vars = {}) => {
   return s;
 };
 
+// Same as the navigate() helper of HA's frontend: the app's router listens
+// for "location-changed", with no page reload.
+const naviga = (percorso) => {
+  history.pushState(null, "", percorso);
+  window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+};
+
+const leggiPreferenza = (chiave) => {
+  try {
+    return window.localStorage.getItem(chiave);
+  } catch (_e) {
+    return null;
+  }
+};
+
+const salvaPreferenza = (chiave, valore) => {
+  try {
+    window.localStorage.setItem(chiave, valore);
+  } catch (_e) {
+    /* private mode or blocked storage: the hint just shows again */
+  }
+};
+
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-// --- Date civili nel fuso del server -------------------------------------------
+// --- Civil dates in the server's time zone --------------------------------------
 //
-// I bucket giornalieri/mensili del Recorder sono calcolati nel fuso configurato
-// in Home Assistant, non in quello del browser: tutti i confini di periodo si
-// calcolano quindi in hass.config.time_zone. Una "data civile" è {y, m, d}
-// con m 0-based; l'aritmetica passa da Date.UTC, che normalizza da sola.
+// The Recorder's daily/monthly buckets are computed in the time zone set in
+// Home Assistant, not in the browser's: every period boundary is therefore
+// computed in hass.config.time_zone. A "civil date" is {y, m, d} with a 0-based
+// m; the arithmetic goes through Date.UTC, which normalises on its own.
 
 const _dtfCache = new Map();
 const partiNelFuso = (date, tz) => {
@@ -147,7 +192,7 @@ const addMesi = (c, n) => {
 
 const giornoSettimana = (c) => new Date(Date.UTC(c.y, c.m, c.d)).getUTCDay();
 
-// --- Colori: stessa sfumatura LAB della Energy Dashboard -----------------------
+// --- Colours: the same LAB shading as the Energy Dashboard ----------------------
 
 const parseColore = (str) => {
   const s = (str || "").trim();
@@ -186,8 +231,8 @@ const labToRgb = ([l, a, bb]) => {
   return [r, g, b].map((v) => Math.round(Math.min(255, Math.max(0, v))));
 };
 
-// Kn = 18, come labBrighten/labDarken del frontend di HA: in tema chiaro le
-// serie successive scuriscono, in tema scuro schiariscono.
+// Kn = 18, like labBrighten/labDarken in HA's frontend: in a light theme the
+// following series get darker, in a dark theme lighter.
 const sfumatura = (rgb, indice, scuro) => {
   if (!indice) return rgb;
   const lab = rgbToLab(rgb);
@@ -197,7 +242,7 @@ const sfumatura = (rgb, indice, scuro) => {
 
 const rgbCss = (rgb, alpha) => (alpha === undefined ? `rgb(${rgb.join(",")})` : `rgba(${rgb.join(",")},${alpha})`);
 
-// --- Scala dell'asse ----------------------------------------------------------
+// --- Axis scale ---------------------------------------------------------------
 
 const scalaArrotondata = (min, max, passi = 4) => {
   if (max - min <= 0) max = min + 1;
@@ -220,7 +265,7 @@ class EdistribuzionePodCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    // Nessun POD esplicito: la card prende da sola il primo trovato.
+    // No explicit POD: the card takes the first one found on its own.
     return {};
   }
 
@@ -260,8 +305,8 @@ class EdistribuzionePodCard extends HTMLElement {
   set hass(hass) {
     const primo = !this._hass;
     this._hass = hass;
-    // hass cambia a ogni evento di stato: si ridisegna solo se cambia
-    // qualcosa che la card usa davvero (tema, lingua, formato numeri).
+    // hass changes on every state event: redraw only when something the
+    // card really uses changes (theme, language, number format).
     const firma = [hass.themes?.darkMode, hass.locale?.language, hass.locale?.number_format,
       hass.locale?.time_format, hass.config?.time_zone].join("|");
     if (primo) {
@@ -287,10 +332,19 @@ class EdistribuzionePodCard extends HTMLElement {
     });
     const chart = this.shadowRoot.querySelector(".chart");
     if (chart) this._ro.observe(chart);
+    // Back on the dashboard (for example after running "Fetch history"):
+    // the statistics may have changed while the card was detached.
+    if (this._staccata && this._hass) {
+      this._staccata = false;
+      this._pods = null;
+      this._estremi = null;
+      this._avvia();
+    }
   }
 
   disconnectedCallback() {
     this._ro?.disconnect();
+    this._staccata = true;
   }
 
   getCardSize() {
@@ -301,7 +355,7 @@ class EdistribuzionePodCard extends HTMLElement {
     return { columns: 12, min_columns: 6 };
   }
 
-  // --- Dati ------------------------------------------------------------------
+  // --- Data ------------------------------------------------------------------
 
   get _tz() {
     return this._hass?.config?.time_zone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -384,15 +438,23 @@ class EdistribuzionePodCard extends HTMLElement {
   }
 
   async _leggiEstremi() {
-    // Due richieste economiche: i mesi con dati (primo e ultimo), poi le ore
-    // dell'ultimo mese per sapere fino a che ora arrivano i dati.
+    // Two cheap requests: the months with data (first and last), then the
+    // hours of the last month to know up to what hour the data goes.
     const id = this._pod.ids.totale;
     const mesi = (await this._statistiche([id], new Date(Date.UTC(2015, 0, 1)), null, "month"))[id];
-    if (!mesi.length) return { primo: null, ultimo: null };
+    if (!mesi.length) return { primo: null, primoGiorno: null, ultimo: null };
     const ultimoMese = mesi[mesi.length - 1];
     const ore = (await this._statistiche([id], new Date(ultimoMese.start), null, "hour"))[id];
+    // The exact first day is only needed for a short history (see
+    // _suggerimentoStorico): one more request only in that case.
+    let primoGiorno = mesi[0].start;
+    if (mesi.length <= 2) {
+      const giorni = (await this._statistiche([id], new Date(mesi[0].start), null, "day"))[id];
+      if (giorni.length) primoGiorno = giorni[0].start;
+    }
     return {
       primo: mesi[0].start,
+      primoGiorno,
       ultimo: ore.length ? ore[ore.length - 1].end : ultimoMese.end,
     };
   }
@@ -443,7 +505,7 @@ class EdistribuzionePodCard extends HTMLElement {
         ?? new Intl.Locale(this._hass?.locale?.language || "it").weekInfo;
       if (info?.firstDay) return info.firstDay % 7;
     } catch (_e) {
-      /* weekInfo non supportato: lunedì */
+      /* weekInfo not supported: Monday */
     }
     return 1;
   }
@@ -507,7 +569,7 @@ class EdistribuzionePodCard extends HTMLElement {
     return this._intervallo().inizio.getTime() > this._estremi.primo;
   }
 
-  // --- Formattazione ---------------------------------------------------------
+  // --- Formatting ------------------------------------------------------------
 
   get _locale() {
     const lang = this._hass?.locale?.language || this._hass?.language || "it";
@@ -535,8 +597,8 @@ class EdistribuzionePodCard extends HTMLElement {
   _titoloPeriodo(iv) {
     if (this._vista === "day") return this._data(iv.inizio, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
     if (this._vista === "week") {
-      // Composto a mano invece di formatRange: in alcune lingue formatRange
-      // aggiunge lo zero iniziale ai giorni ("04 ott").
+      // Built by hand instead of formatRange: in some languages formatRange
+      // adds a leading zero to the days ("04 ott").
       const ultimo = mezzanotte(addGiorni(iv.fineCivile, -1), this._tz);
       const stessoMese = iv.inizioCivile.m === addGiorni(iv.fineCivile, -1).m;
       const da = this._data(iv.inizio, stessoMese ? { day: "numeric" } : { day: "numeric", month: "short" });
@@ -561,8 +623,8 @@ class EdistribuzionePodCard extends HTMLElement {
     const { iv } = this._dati;
     const t = new Date(iv.slot[i]);
     if (iv.period === "hour") {
-      // Con l'orologio a 12 ore "3 AM" invece di "03:00 AM": più corto, come
-      // le etichette dei grafici nativi.
+      // With the 12-hour clock "3 AM" instead of "03:00 AM": shorter, like
+      // the labels of the native charts.
       return this._dodiciOre()
         ? this._data(t, { hour: "numeric" })
         : this._data(t, { hour: "2-digit", minute: "2-digit" });
@@ -580,7 +642,7 @@ class EdistribuzionePodCard extends HTMLElement {
     return ciclo === "h11" || ciclo === "h12";
   }
 
-  // --- Colori dal tema corrente ----------------------------------------------
+  // --- Colours from the current theme ----------------------------------------
 
   _colori() {
     const cs = getComputedStyle(this);
@@ -605,9 +667,7 @@ class EdistribuzionePodCard extends HTMLElement {
     const pod = this._pod;
 
     if (this._pods && !pod) {
-      this._modo = "vuoto";
-      this.shadowRoot.innerHTML = `<style>${STILE}</style>
-        <ha-card><div class="empty-card"><ha-alert alert-type="info">${escapeHtml(t("no_pod"))}</ha-alert></div></ha-card>`;
+      this._renderVuota();
       return;
     }
     if (this._modo !== "card") this._struttura();
@@ -616,7 +676,7 @@ class EdistribuzionePodCard extends HTMLElement {
     const colori = this._colori();
     $("ha-card").style.setProperty("--edist-accent", rgbCss(colori.totale));
 
-    // intestazione
+    // header
     const icona = this._config.icon || "mdi:transmission-tower";
     if ($(".icon ha-icon").getAttribute("icon") !== icona) $(".icon ha-icon").setAttribute("icon", icona);
     $(".primary").textContent = this._config.name || t("name");
@@ -629,7 +689,7 @@ class EdistribuzionePodCard extends HTMLElement {
     }
     $(".secondary").textContent = secondaria;
 
-    // selettore periodo e navigazione
+    // period selector and navigation
     this.shadowRoot.querySelectorAll("[data-vista]").forEach((el) => {
       const sel = el.dataset.vista === this._vista;
       el.classList.toggle("selected", sel);
@@ -647,8 +707,9 @@ class EdistribuzionePodCard extends HTMLElement {
 
     $(".error").innerHTML = this._errore
       ? `<ha-alert alert-type="error">${escapeHtml(t("load_error", { error: this._errore }))}</ha-alert>` : "";
+    this._renderSuggerimento($(".hint"));
 
-    // totali e ripartizione per fascia
+    // totals and split by band
     const valori = this._dati?.valori || [];
     const somma = (k) => valori.reduce((acc, v) => (v[k] === null ? acc : (acc ?? 0) + v[k]), null);
     const totFasce = FASCE.map((f) => somma(f) || 0);
@@ -684,10 +745,77 @@ class EdistribuzionePodCard extends HTMLElement {
     this._renderGrafico();
   }
 
+  // --- Guidance when there is little or no data --------------------------------
+
+  _alertConAzione(titolo, testo, etichetta, percorso, extra = "") {
+    // The action and the setup are admin-only pages: other users get the
+    // explanation without a button that would lead nowhere.
+    const admin = !!this._hass.user?.is_admin;
+    const t = (k) => traduci(this._hass, k);
+    return `<ha-alert alert-type="info" title="${escapeHtml(titolo)}" ${extra}>
+      ${escapeHtml(testo)}${admin ? "" : ` ${escapeHtml(t("ask_admin"))}`}
+      ${admin ? `<ha-button slot="action" data-percorso="${escapeHtml(percorso)}">${escapeHtml(etichetta)}</ha-button>` : ""}
+    </ha-alert>`;
+  }
+
+  _collegaPulsanti(radice) {
+    radice.querySelectorAll("[data-percorso]").forEach((el) =>
+      el.addEventListener("click", () => naviga(el.dataset.percorso)));
+  }
+
+  _renderVuota() {
+    // No E-Distribuzione statistics at all: tell apart "integration missing"
+    // from "set up, but nothing imported yet", each with the step to take.
+    const t = (k) => traduci(this._hass, k);
+    const configurata = (this._hass.config?.components || []).includes(SOURCE);
+    const chiave = configurata ? "empty" : "not_configured";
+    if (this._modo === `vuoto-${chiave}`) return;
+    this._modo = `vuoto-${chiave}`;
+    const alert = configurata
+      ? this._alertConAzione(t("empty_title"), t("empty_text"), t("fetch_history"), URL_AZIONE_STORICO)
+      : this._alertConAzione(t("not_configured_title"), t("not_configured_text"), t("configure"), URL_CONFIGURA);
+    this.shadowRoot.innerHTML = `<style>${STILE}</style><ha-card><div class="empty-card">${alert}</div></ha-card>`;
+    this._collegaPulsanti(this.shadowRoot);
+  }
+
+  get _chiaveSuggerimento() {
+    return `${CARD_TYPE}:storico-nascosto:${this._pod?.slug}`;
+  }
+
+  _suggerimentoStorico() {
+    // Only a short history, right after setup: the hint says why the card
+    // shows so little and how to get the rest. Hidden for good per POD once
+    // the user closes it, and on its own as soon as the history is longer.
+    const e = this._estremi;
+    if (!this._pod || !e?.primoGiorno || !e?.ultimo) return null;
+    if (e.ultimo - e.primoGiorno >= STORICO_BREVE_MS) return null;
+    if (leggiPreferenza(this._chiaveSuggerimento)) return null;
+    return this._data(new Date(e.primoGiorno), { day: "numeric", month: "long", year: "numeric" });
+  }
+
+  _renderSuggerimento(host) {
+    const data = this._suggerimentoStorico();
+    const firma = data ? `${this._pod.slug}|${data}|${lingua(this._hass)}` : "";
+    if (host.dataset.firma === firma) return;
+    host.dataset.firma = firma;
+    if (!data) {
+      host.innerHTML = "";
+      return;
+    }
+    const t = (k, v) => traduci(this._hass, k, v);
+    host.innerHTML = this._alertConAzione(
+      t("history_title"), t("history_text", { date: data }), t("fetch_history"), URL_AZIONE_STORICO, "dismissable");
+    this._collegaPulsanti(host);
+    host.querySelector("ha-alert").addEventListener("alert-dismissed-clicked", () => {
+      salvaPreferenza(this._chiaveSuggerimento, "1");
+      this._render();
+    });
+  }
+
   _struttura() {
-    // Struttura creata una volta sola: gli aggiornamenti successivi toccano
-    // solo testi e attributi, così icone e pulsanti non lampeggiano a ogni
-    // cambio di periodo.
+    // Structure created only once: later updates only touch texts and
+    // attributes, so icons and buttons do not flicker on every period
+    // change.
     this._modo = "card";
     this.shadowRoot.innerHTML = `
       <style>${STILE}</style>
@@ -708,6 +836,7 @@ class EdistribuzionePodCard extends HTMLElement {
             <div class="period"></div>
             <ha-icon-button data-azione="next"><ha-icon icon="mdi:chevron-right"></ha-icon></ha-icon-button>
           </div>
+          <div class="hint"></div>
           <div class="error"></div>
           <div class="totals"></div>
           <div class="fasce" hidden>
@@ -735,8 +864,8 @@ class EdistribuzionePodCard extends HTMLElement {
     if (vista === this._vista) return;
     this._vista = vista;
     if (this._ancora && this._estremi?.ultimo) {
-      // Si resta sull'ultimo giorno con dati se cade nel nuovo periodo,
-      // altrimenti sul giorno già visualizzato.
+      // Stay on the last day with data if it falls in the new period,
+      // otherwise on the day already shown.
       const ultimoGiorno = civile(new Date(this._estremi.ultimo - 1), this._tz);
       const iv = this._intervallo(vista, this._ancora);
       const t = mezzanotte(ultimoGiorno, this._tz).getTime();
@@ -784,7 +913,7 @@ class EdistribuzionePodCard extends HTMLElement {
     const barW = Math.min(50, Math.max(1, slotW * 0.7));
 
     const parti = [];
-    // griglia (splitLine del valueAxis nel tema ECharts di HA)
+    // grid (splitLine of the valueAxis in HA's ECharts theme)
     scala.ticks.forEach((v, i) => {
       const yy = Math.round(y(v)) + 0.5;
       parti.push(`<line class="grid" x1="${left}" x2="${W - right}" y1="${yy}" y2="${yy}"/>`);
@@ -793,9 +922,9 @@ class EdistribuzionePodCard extends HTMLElement {
     parti.push(`<text class="ylab" x="${left - 8}" y="${top - 12}">kWh</text>`);
     parti.push(`<rect class="hover-band" x="0" y="${top}" width="0" height="${plotH}" />`);
 
-    // Come le card energia native: il segmento più esterno di ogni pila ha
-    // gli angoli esterni arrotondati a 4px (sopra per il prelievo, sotto per
-    // l'immissione), gli altri restano squadrati.
+    // Like the native energy cards: the outermost segment of each stack has
+    // its outer corners rounded to 4px (top for consumption, bottom for
+    // injection), the others stay square.
     const segmento = (x, y0, y1, rgb, arrotondaSopra, arrotondaSotto) => {
       const h = Math.abs(y1 - y0);
       const yy = Math.min(y0, y1);
@@ -828,10 +957,10 @@ class EdistribuzionePodCard extends HTMLElement {
       if (negativo[i]) parti.push(segmento(x, y(0), y(negativo[i]), colori.immessa, false, true));
     }
 
-    // etichette dell'asse X senza sovrapposizioni
+    // X axis labels without overlaps
     const stretta = iv.period === "month" && slotW < 30;
-    // Larghezza stimata dall'etichetta più lunga, così il passo si adatta a
-    // lingua e formato orario (es. "12 PM", "mer", "Sep") senza sovrapposizioni.
+    // Width estimated from the longest label, so the step adapts to language
+    // and time format (e.g. "12 PM", "mer", "Sep") without overlaps.
     const caratteriMax = Math.max(...iv.slot.map((_, i) => this._etichettaAsse(i, stretta).length));
     const larghezzaEtichetta = caratteriMax * 6.5 + 8;
     const passiPossibili = iv.period === "hour" ? [1, 2, 3, 4, 6, 12] : iv.period === "day" ? [1, 2, 3, 5, 7, 10] : [1, 2, 3, 6];
@@ -896,7 +1025,7 @@ class EdistribuzionePodCard extends HTMLElement {
     if (serie.length > 1) {
       const presenti = [...serie].reverse().filter((k) => v[k]);
       for (const k of presenti) righe.push(riga(colori[k], k.toUpperCase(), v[k]));
-      // Il totale serve solo se le fasce sono più di una (nelle ore è sempre una).
+      // The total is only needed with more than one band (an hour always has one).
       if (v.totale !== null && presenti.length !== 1) righe.push(`<div class="tip-row tip-total"><span class="tip-name">${escapeHtml(t("withdrawn"))}</span><span class="tip-value">${this._numero(v.totale)} kWh</span></div>`);
     } else if (v.totale !== null) {
       righe.push(riga(colori.totale, t("withdrawn"), v.totale));
@@ -913,6 +1042,8 @@ const STILE = `
   :host { display: block; }
   ha-card { height: 100%; overflow: hidden; }
   .empty-card { padding: 16px; }
+  .hint:empty { display: none; }
+  ha-alert { display: block; }
 
   .header {
     display: flex; align-items: center; gap: 10px;
@@ -943,7 +1074,7 @@ const STILE = `
 
   .content { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px 16px; }
 
-  /* come ha-control-select */
+  /* like ha-control-select */
   .segmented {
     --control-select-color: var(--edist-accent);
     position: relative; display: flex; gap: 4px; padding: 4px; box-sizing: border-box;
@@ -1030,7 +1161,7 @@ const STILE = `
     pointer-events: none;
   }
 
-  /* come il tooltip del tema ECharts di HA */
+  /* like the tooltip of HA's ECharts theme */
   .tooltip {
     position: absolute; z-index: 1; pointer-events: none; white-space: nowrap;
     background: var(--ha-card-background, var(--card-background-color, #fff));
@@ -1047,7 +1178,7 @@ const STILE = `
   .tip-empty { color: var(--secondary-text-color); }
 `;
 
-// --- Editor visuale (ha-form, come le card native) -------------------------------
+// --- Visual editor (ha-form, like the native cards) -----------------------------
 
 class EdistribuzionePodCardEditor extends HTMLElement {
   set hass(hass) {
@@ -1120,17 +1251,16 @@ class EdistribuzionePodCardEditor extends HTMLElement {
   }
 }
 
-// Registrazione degli elementi.
+// Registering the elements.
 //
-// Il frontend di HA sostituisce window.customElements con un proprio registro
-// (polyfill degli scoped custom element registry) durante l'avvio, e i moduli
-// extra registrati dalle integrazioni possono essere eseguiti PRIMA di quel
-// momento: un define immediato finirebbe nel registro nativo del browser, che
-// HA poi non consulta più, e la card risulterebbe "sconosciuta" (Errore di
-// configurazione). Si aspetta quindi che l'app <home-assistant> sia definita
-// - a quel punto il registro definitivo è al suo posto - e si legge
-// window.customElements solo allora. Caricata più tardi (es. come risorsa
-// Lovelace) la card si registra subito.
+// HA's frontend replaces window.customElements with a registry of its own (the
+// scoped custom element registry polyfill) while starting, and the extra
+// modules registered by integrations can run BEFORE that moment: an immediate
+// define would end up in the browser's native registry, which HA no longer
+// looks at, and the card would be "unknown" (Configuration error). So it waits
+// for the <home-assistant> app to be defined - by then the final registry is
+// in place - and reads window.customElements only then. Loaded later (e.g. as
+// a Lovelace resource) the card registers right away.
 const registraElementi = () => {
   const registro = window.customElements;
   if (!registro.get(CARD_TYPE)) registro.define(CARD_TYPE, EdistribuzionePodCard);
@@ -1141,7 +1271,7 @@ if (window.customElements.get("home-assistant")) {
   registraElementi();
 } else {
   window.customElements.whenDefined("home-assistant").then(registraElementi);
-  // Pagine senza l'app principale (nessun <home-assistant> da attendere).
+  // Pages without the main app (no <home-assistant> to wait for).
   window.addEventListener("load", () => {
     if (!document.querySelector("home-assistant")) registraElementi();
   });

@@ -1,11 +1,11 @@
-"""Test della logica di import statistiche: statistic_id per direzione
-(prelevata/immessa), aggregazione oraria dei campioni a 15 minuti già
-estratti, e il percorso completo (raw_storage -> external statistics) con
-un vero Recorder - incluso lo scenario di rettifica storica con ricalcolo
-delle sum cumulative.
+"""Statistics import logic: statistic_id per direction (consumption/
+injection), hourly aggregation of the 15-minute samples already extracted, and
+the full path (raw_storage -> external statistics) with a real Recorder -
+including the historical correction scenario with the cumulative sums
+recomputed.
 
-Lo schema delle risposte usato qui è quello confermato su dati reali e
-documentato in documentation/protocol.md.
+The response schema used here is the one confirmed on real data and
+documented in documentation/protocol.md.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _giorno(
     frequenza: int = 15,
     time_type: str = "CONS",
 ) -> dict:
-    """Un elemento della lista 'data' di querydailyloadprofile."""
+    """An element of querydailyloadprofile's 'data' list."""
     return {
         "readings": {
             "energyType": energy_type,
@@ -50,9 +50,9 @@ def _giorno(
 def _giorno_sparso(
     sample_date: str, initial_sample: str, campioni_per_id: dict[int, float], *, frequenza: int = 15
 ) -> dict:
-    """Come _giorno, ma con solo alcuni id/val espliciti - comodo per
-    costruire un giorno con pochi campioni mirati (es. una sola ora) invece
-    di un elenco contiguo da id=1."""
+    """Like _giorno, but with only a few explicit id/val - handy to build a
+    day with a few targeted samples (e.g. a single hour) instead of a
+    contiguous list from id=1."""
     return {
         "readings": {
             "energyType": "A1",
@@ -66,17 +66,17 @@ def _giorno_sparso(
 
 
 def _ore_da_giorni(giorni: list[dict]) -> list[tuple[datetime, float]]:
-    """Pipeline completa parsing + bucketing, per testare _aggrega_ore con
-    lo stesso schema JSON usato altrove nel progetto."""
+    """Full parsing + bucketing pipeline, to test _aggrega_ore with the same
+    JSON schema used elsewhere in the project."""
     return st._aggrega_ore(rs.estrai_campioni(giorni))
 
 
-# 1 agosto 2026, ora legale (CEST, UTC+2): il campione id=1 cade a mezzanotte
-# locale, quindi initialSample è il 31 luglio alle 22:00 UTC.
+# August 1, 2026, daylight saving time (CEST, UTC+2): sample id=1 falls at
+# local midnight, so initialSample is July 31 at 22:00 UTC.
 AGOSTO = ("20260801", "2026-07-31T22:00:00.000+00:00")
 
-# id -> ora locale del 2026-08-01, per costruire giorni sparsi mirati su
-# un'ora specifica: id = (ore*4) + 1 + quarto_d_ora.
+# id -> local hour of 2026-08-01, to build sparse days aimed at a specific
+# hour: id = (hours*4) + 1 + quarter_of_hour.
 ID_14_00, ID_14_15, ID_14_30, ID_14_45 = 57, 58, 59, 60
 ID_15_00, ID_15_15, ID_15_30, ID_15_45 = 61, 62, 63, 64
 
@@ -112,15 +112,15 @@ def test_statistic_id_sostituisce_i_caratteri_strani():
 
 # --- _aggrega_ore -------------------------------------------------------------
 #
-# Il parsing JSON->campioni (DST, campioni corrotti, initialSample non
-# parsabile, ecc.) è testato in test_raw_storage.py: qui si copre solo il
-# bucketing, dato un elenco di campioni già estratti.
+# Parsing JSON->samples (DST, corrupted samples, unparseable initialSample,
+# etc.) is tested in test_raw_storage.py: only the bucketing is covered here,
+# given a list of samples already extracted.
 
 def test_aggrega_quattro_campioni_in_una_sola_ora():
     risultato = _ore_da_giorni([_giorno(*AGOSTO, [0.1, 0.2, 0.3, 0.4])])
     assert len(risultato) == 1
     inizio, kwh = risultato[0]
-    assert inizio.isoformat() == "2026-07-31T22:00:00+00:00"  # 00:00 locale
+    assert inizio.isoformat() == "2026-07-31T22:00:00+00:00"  # 00:00 local
     assert kwh == pytest.approx(1.0)
 
 
@@ -139,14 +139,14 @@ def test_piu_giorni_nella_stessa_risposta():
     risultato = _ore_da_giorni(giorni)
     assert len(risultato) == 48
     assert sum(kwh for _, kwh in risultato) == pytest.approx(96.0 + 192.0)
-    # Ordinato cronologicamente, indipendentemente dall'ordine di arrivo
+    # Chronological order, whatever the arrival order
     assert risultato == sorted(risultato)
 
 
 def test_l_aggregazione_non_dipende_dall_energy_type():
-    """La direzione la decide il chiamante (quale magnitude ha chiesto), non
-    questo modulo: la stessa curva marcata come immessa deve produrre
-    esattamente gli stessi bucket."""
+    """The direction is decided by the caller (which magnitude it
+    requested), not by this module: the same curve marked as injection must
+    give exactly the same buckets."""
     valori = [0.3] * 96
     prelevata = _ore_da_giorni([_giorno(*AGOSTO, valori, energy_type="A1")])
     immessa = _ore_da_giorni([_giorno(*AGOSTO, valori, energy_type="A2", time_type="PROD")])
@@ -154,40 +154,40 @@ def test_l_aggregazione_non_dipende_dall_energy_type():
 
 
 def test_curva_fotovoltaica_lascia_a_zero_le_ore_notturne():
-    """Forma attesa di una curva di produzione: nulla di notte, positiva
-    nelle ore centrali. Verifica che i bucket cadano nell'ora locale giusta,
-    non solo che i totali tornino."""
-    # 20 campioni (00:00-04:45) a zero, 64 diurni, 12 serali (21:00-23:45) a zero
+    """Expected shape of a production curve: nothing at night, positive in
+    the middle hours. Checks that the buckets fall on the right local hour,
+    not only that the totals add up."""
+    # 20 samples (00:00-04:45) at zero, 64 during the day, 12 in the evening (21:00-23:45) at zero
     valori = [0.0] * 20 + [1.0] * 64 + [0.0] * 12
     per_ora = dict(_ore_da_giorni([_giorno(*AGOSTO, valori)]))
 
     def kwh_alle(ora_utc: str) -> float:
         return per_ora[datetime.fromisoformat(ora_utc)]
 
-    assert kwh_alle("2026-07-31T22:00:00+00:00") == 0.0  # 00:00 locale
-    assert kwh_alle("2026-08-01T10:00:00+00:00") == pytest.approx(4.0)  # 12:00 locale
-    assert kwh_alle("2026-08-01T21:00:00+00:00") == 0.0  # 23:00 locale
+    assert kwh_alle("2026-07-31T22:00:00+00:00") == 0.0  # 00:00 local
+    assert kwh_alle("2026-08-01T10:00:00+00:00") == pytest.approx(4.0)  # 12:00 local
+    assert kwh_alle("2026-08-01T21:00:00+00:00") == 0.0  # 23:00 local
 
 
 def test_aggrega_ore_risposta_vuota():
     assert st._aggrega_ore([]) == []
 
 
-# --- async_import_curva_giornaliera: percorso completo con Recorder vero ----
+# --- async_import_curva_giornaliera: full path with a real Recorder --------
 #
-# A differenza della versione precedente (che rileggeva la serie oraria già
-# scritta nel Recorder per fondervi i nuovi dati), ora la source of truth è
-# raw_storage: questi test verificano che il percorso reale - upsert dei
-# campioni a 15', ricalcolo completo da tutta la serie, scrittura come
-# external statistics - produca stato e sum corretti, incluso il caso in
-# cui E-Distribuzione rettifica un campione già importato.
+# Unlike the previous version (which read back the hourly series already
+# written to the Recorder to merge the new data into it), the source of truth
+# is now raw_storage: these tests check that the real path - upsert of the
+# 15-minute samples, full recompute from the whole series, write as external
+# statistics - gives the right state and sum, including the case where
+# E-Distribuzione corrects a sample already imported.
 
 def _ora(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
 
 
 async def _leggi_statistiche(hass, statistic_id: str) -> dict[datetime, dict]:
-    """{inizio_ora_utc: {"state": ..., "sum": ...}} per uno statistic_id."""
+    """{utc_hour_start: {"state": ..., "sum": ...}} for a statistic_id."""
     inizio_epoca = dt_util.utc_from_timestamp(0)
     risultato = await get_instance(hass).async_add_executor_job(
         statistics_during_period,
@@ -223,8 +223,8 @@ async def test_reimport_con_dati_identici_e_idempotente(recorder_mock, hass):
 
 async def test_prelevata_e_immessa_sono_serie_indipendenti(recorder_mock, hass):
     pod = "IT001E00000011"
-    giorno_prelevata = _giorno(*AGOSTO, [0.25] * 96)  # 1.0 kWh/ora
-    giorno_immessa = _giorno(*AGOSTO, [0.5] * 96, energy_type="A2")  # 2.0 kWh/ora
+    giorno_prelevata = _giorno(*AGOSTO, [0.25] * 96)  # 1.0 kWh/hour
+    giorno_immessa = _giorno(*AGOSTO, [0.5] * 96, energy_type="A2")  # 2.0 kWh/hour
 
     await st.async_import_curva_giornaliera(hass, pod, [giorno_prelevata], immessa=False)
     await st.async_import_curva_giornaliera(hass, pod, [giorno_immessa], immessa=True)
@@ -240,12 +240,11 @@ async def test_prelevata_e_immessa_sono_serie_indipendenti(recorder_mock, hass):
 
 
 async def test_rettifica_storica_corregge_stato_e_tutte_le_sum_successive(recorder_mock, hass):
-    """Lo scenario esatto della rettifica: un campione da 300.0 kWh (errore
-    di trasmissione) viene poi corretto a 0.3 da E-Distribuzione. Dopo il
-    reimport, l'ora corretta E la sum cumulativa di OGNI ora successiva
-    devono riflettere il valore giusto - non solo lo 'state' dell'ora
-    toccata, che da solo non basterebbe a rendere corretto il grafico
-    cumulativo della Energy Dashboard.
+    """The exact correction scenario: a 300.0 kWh sample (transmission
+    error) is later corrected to 0.3 by E-Distribuzione. After the reimport,
+    the corrected hour AND the cumulative sum of EVERY following hour must
+    reflect the right value - not only the 'state' of the hour touched, which
+    alone would not make the Energy Dashboard's cumulative chart right.
     """
     pod = "IT001E00000012"
     campioni_prima = {
@@ -259,7 +258,7 @@ async def test_rettifica_storica_corregge_stato_e_tutte_le_sum_successive(record
 
     statistic_id = st._sanitize_statistic_id(pod)
     ore = await _leggi_statistiche(hass, statistic_id)
-    # 14:00/15:00 locale (CEST, UTC+2) = 12:00/13:00 UTC.
+    # 14:00/15:00 local (CEST, UTC+2) = 12:00/13:00 UTC.
     ora_14 = _ora("2026-08-01T12:00:00+00:00")
     ora_15 = _ora("2026-08-01T13:00:00+00:00")
 
@@ -268,9 +267,9 @@ async def test_rettifica_storica_corregge_stato_e_tutte_le_sum_successive(record
     assert ore[ora_15]["state"] == pytest.approx(0.4)
     assert ore[ora_15]["sum"] == pytest.approx(301.0)
 
-    # E-Distribuzione rettifica: la stessa risposta, con l'unico campione
-    # delle 14:15 corretto da 300.0 a 0.3 - come farebbe davvero l'API
-    # (torna sempre la giornata intera, non solo il campione cambiato).
+    # E-Distribuzione corrects: the same response, with the only sample at
+    # 14:15 corrected from 300.0 to 0.3 - as the API really would (it always
+    # returns the whole day, not only the changed sample).
     campioni_dopo = {**campioni_prima, ID_14_15: 0.3}
     giorno_dopo = _giorno_sparso(*AGOSTO, campioni_dopo)
 
@@ -280,16 +279,16 @@ async def test_rettifica_storica_corregge_stato_e_tutte_le_sum_successive(record
     ore = await _leggi_statistiche(hass, statistic_id)
     assert ore[ora_14]["state"] == pytest.approx(0.9)
     assert ore[ora_14]["sum"] == pytest.approx(0.9)
-    assert ore[ora_15]["state"] == pytest.approx(0.4)  # ora non toccata: stato invariato...
-    assert ore[ora_15]["sum"] == pytest.approx(1.3)  # ...ma la sum si propaga corretta
+    assert ore[ora_15]["state"] == pytest.approx(0.4)  # hour not touched: state unchanged...
+    assert ore[ora_15]["sum"] == pytest.approx(1.3)  # ...but the sum propagates correctly
 
 
 async def test_reimport_di_un_periodo_piu_ampio_non_perde_ore_precedenti(recorder_mock, hass):
-    """Un reimport che copre solo gli ultimi giorni (es. il ricontrollo
-    automatico D-1..D-3) non deve far sparire le ore di giorni importati in
-    precedenza: raw_storage accumula, non sostituisce l'intera serie."""
+    """A reimport covering only the last days (e.g. the automatic D-1..D-3
+    recheck) must not drop the hours of days imported before: raw_storage
+    accumulates, it does not replace the whole series."""
     pod = "IT001E00000013"
-    giorno_1 = _giorno(*AGOSTO, [0.25] * 96)  # 1.0 kWh/ora
+    giorno_1 = _giorno(*AGOSTO, [0.25] * 96)  # 1.0 kWh/hour
     giorno_2 = _giorno("20260802", "2026-08-01T22:00:00.000+00:00", [0.25] * 96)
 
     await st.async_import_curva_giornaliera(hass, pod, [giorno_1])
@@ -300,16 +299,16 @@ async def test_reimport_di_un_periodo_piu_ampio_non_perde_ore_precedenti(recorde
     statistic_id = st._sanitize_statistic_id(pod)
     ore = await _leggi_statistiche(hass, statistic_id)
     assert len(ore) == 48
-    # La sum continua a crescere nel secondo giorno, non riparte da zero.
+    # The sum keeps growing on the second day, it does not restart from zero.
     ultima_ora_giorno1 = _ora("2026-08-01T21:00:00+00:00")
     prima_ora_giorno2 = _ora("2026-08-01T22:00:00+00:00")
     assert ore[ultima_ora_giorno1]["sum"] == pytest.approx(24.0)
     assert ore[prima_ora_giorno2]["sum"] == pytest.approx(25.0)
 
 
-# --- Serie per fascia ARERA (F1/F2/F3) -----------------------------------------
+# --- Series per ARERA band (F1/F2/F3) -----------------------------------------
 
-# Lunedì 3 agosto 2026, giorno feriale (AGOSTO, il 1°, è un sabato).
+# Monday August 3, 2026, a working day (AGOSTO, the 1st, is a Saturday).
 LUNEDI = ("20260803", "2026-08-02T22:00:00.000+00:00")
 
 
@@ -331,17 +330,17 @@ async def test_prelevata_genera_anche_le_serie_per_fascia(recorder_mock, hass):
         f: await _leggi_statistiche(hass, sid) for f, sid in st.statistic_ids_fasce(pod).items()
     }
 
-    # Stessi timestamp orari della serie totale, in tutte e tre le fasce.
+    # Same hourly timestamps as the total series, in all three bands.
     assert all(set(ore) == set(totale) for ore in per_fascia.values())
     assert len(totale) == 24
 
-    # 10:00 locale (CEST) = 08:00 UTC: tutta l'ora in F1, zero nelle altre.
+    # 10:00 local (CEST) = 08:00 UTC: the whole hour in F1, zero in the others.
     ora_10 = _ora("2026-08-03T08:00:00+00:00")
     assert per_fascia["f1"][ora_10]["state"] == pytest.approx(1.0)
     assert per_fascia["f2"][ora_10]["state"] == pytest.approx(0.0)
     assert per_fascia["f3"][ora_10]["state"] == pytest.approx(0.0)
 
-    # Sum finali: F1 11 h, F2 5 h, F3 8 h, e insieme fanno il totale.
+    # Final sums: F1 11 h, F2 5 h, F3 8 h, and together they make the total.
     ultima = max(totale)
     assert per_fascia["f1"][ultima]["sum"] == pytest.approx(11.0)
     assert per_fascia["f2"][ultima]["sum"] == pytest.approx(5.0)
@@ -364,10 +363,10 @@ async def test_immessa_non_genera_serie_per_fascia(recorder_mock, hass):
 
 
 async def test_rettifica_si_propaga_anche_alle_fasce(recorder_mock, hass):
-    """Una rettifica corregge la serie per fascia come la totale: stessa
-    source of truth, stesso ricalcolo completo."""
+    """A correction fixes the per-band series like the total one: same
+    source of truth, same full recompute."""
     pod = "IT001E00000022"
-    id_10_00 = 10 * 4 + 1  # primo quarto d'ora delle 10:00 locali
+    id_10_00 = 10 * 4 + 1  # first quarter of an hour of 10:00 local
     prima = _giorno_sparso(*LUNEDI, {id_10_00: 300.0})
     await st.async_import_curva_giornaliera(hass, pod, [prima])
     await async_recorder_block_till_done(hass)
