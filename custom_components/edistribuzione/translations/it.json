@@ -185,6 +185,15 @@
       },
       "spesa_mese": {
         "name": "Spesa del mese"
+      },
+      "picco_giorno_potenza": {
+        "name": "Picco di potenza ultimo giorno"
+      },
+      "picco_mese_potenza": {
+        "name": "Picco di potenza del mese"
+      },
+      "potenza_impegnata": {
+        "name": "Potenza impegnata"
       }
     }
   },

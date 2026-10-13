@@ -392,3 +392,22 @@ async def test_serie_dei_costi_in_euro(recorder_mock, hass):
 
     righe = await _leggi_statistiche(hass, st.statistic_id_costo(pod))
     assert [righe[k]["sum"] for k in sorted(righe)] == [0.5, 0.75]
+
+
+async def test_import_della_prelevata_scrive_anche_la_potenza(recorder_mock, hass):
+    pod = "IT001E00000021"
+    await st.async_import_curva_giornaliera(hass, pod, [_giorno(*AGOSTO, [0.25] * 96)])
+    await async_recorder_block_till_done(hass)
+    righe = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        dt_util.utc_from_timestamp(0),
+        None,
+        {st.statistic_id_potenza(pod)},
+        "hour",
+        None,
+        {"mean", "max"},
+    )
+    ore = righe[st.statistic_id_potenza(pod)]
+    assert len(ore) == 24
+    assert {(r["mean"], r["max"]) for r in ore} == {(1.0, 1.0)}

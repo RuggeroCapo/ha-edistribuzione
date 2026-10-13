@@ -190,3 +190,29 @@ def kwh_ultimo_giorno(
     finally:
         con.close()
     return giorno, float(totale or 0.0)
+
+
+def campioni_mese_ultimo_giorno(
+    db_path: str, pod: str, direzione: str, fuso: tzinfo
+) -> list[tuple[datetime, float]]:
+    """Samples from the start of the month of the most recent day (in 'fuso')
+    up to that day, ordered by timestamp; empty if there are none. Reads one
+    month, not the whole history: enough for the month's peaks."""
+    con = _connetti(db_path)
+    try:
+        (ultimo,) = con.execute(
+            "SELECT MAX(timestamp_utc) FROM campioni WHERE pod = ? AND direzione = ?",
+            (pod, direzione),
+        ).fetchone()
+        if ultimo is None:
+            return []
+        giorno = datetime.fromtimestamp(ultimo, tz=fuso).date()
+        inizio = datetime.combine(giorno.replace(day=1), time.min, tzinfo=fuso)
+        righe = con.execute(
+            "SELECT timestamp_utc, kwh FROM campioni WHERE pod = ? AND direzione = ? "
+            "AND timestamp_utc >= ? ORDER BY timestamp_utc",
+            (pod, direzione, int(inizio.timestamp())),
+        ).fetchall()
+    finally:
+        con.close()
+    return [(datetime.fromtimestamp(ts, tz=UTC), kwh) for ts, kwh in righe]

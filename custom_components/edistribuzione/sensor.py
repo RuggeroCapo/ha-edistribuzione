@@ -86,6 +86,9 @@ def build_entities(hass, coordinator: EdistribuzioneCoordinator) -> list[SensorE
         entities.append(UltimaDataDisponibileSensor(coordinator, entry, pod, id_padre))
         entities.append(ConsumoGiornoSensor(coordinator, entry, pod, id_padre, immessa=False))
         entities.append(ConsumoGiornoSensor(coordinator, entry, pod, id_padre, immessa=True))
+        entities.append(PiccoPotenzaSensor(coordinator, entry, pod, id_padre, mese=False))
+        entities.append(PiccoPotenzaSensor(coordinator, entry, pod, id_padre, mese=True))
+        entities.append(PotenzaContrattoSensor(coordinator, entry, pod, id_padre))
         if coordinator.ha_costi(pod):
             entities.append(CostoSensor(coordinator, entry, pod, id_padre, mese=False))
             entities.append(CostoSensor(coordinator, entry, pod, id_padre, mese=True))
@@ -301,3 +304,83 @@ class CostoSensor(_SensoreRiepilogo):
         if self._mese:
             return {"mese": self._costi.get("mese"), "fino_al": self._costi.get("giorno")}
         return {"giorno": self._costi.get("giorno")}
+
+
+class PiccoPotenzaSensor(_SensoreRiepilogo):
+    """Highest 15-minute average power drawn (kW) on the last imported day,
+    or in its month up to that day (see potenza.py). Attributes: when, ARERA
+    band, and share of the available power."""
+
+    _attr_entity_category = None
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = "kW"
+    _attr_icon = "mdi:flash-alert"
+
+    def __init__(
+        self,
+        coordinator: EdistribuzioneCoordinator,
+        entry: ConfigEntry,
+        pod: str,
+        id_padre: str | None = None,
+        *,
+        mese: bool,
+    ) -> None:
+        super().__init__(coordinator, entry, pod, id_padre)
+        self._chiave = "picco_mese" if mese else "picco_giorno"
+        self._attr_translation_key = f"{self._chiave}_potenza"
+        self._attr_unique_id = f"{entry.entry_id}_{pod}_{self._chiave}_potenza"
+
+    @property
+    def _potenza(self) -> dict:
+        return self._riepilogo.get("potenza") or {}
+
+    @property
+    def _picco(self) -> dict:
+        return self._potenza.get(self._chiave) or {}
+
+    @property
+    def native_value(self) -> float | None:
+        return self._picco.get("kw")
+
+    @property
+    def extra_state_attributes(self):
+        attributi = {
+            "quando": self._picco.get("quando"),
+            "fascia": self._picco.get("fascia"),
+            "percentuale_disponibile": self._picco.get("percentuale_disponibile"),
+        }
+        if self._chiave == "picco_mese":
+            attributi |= {"mese": self._potenza.get("mese"), "fino_al": self._potenza.get("giorno")}
+        return attributi
+
+
+class PotenzaContrattoSensor(_SensoreRiepilogo):
+    """Contract power (kW) of the POD from getSupplies, with the available
+    power (usually 10% more) in the attributes."""
+
+    _attr_translation_key = "potenza_impegnata"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = "kW"
+    _attr_icon = "mdi:gauge"
+
+    def __init__(
+        self,
+        coordinator: EdistribuzioneCoordinator,
+        entry: ConfigEntry,
+        pod: str,
+        id_padre: str | None = None,
+    ) -> None:
+        super().__init__(coordinator, entry, pod, id_padre)
+        self._attr_unique_id = f"{entry.entry_id}_{pod}_potenza_impegnata"
+
+    @property
+    def _contratto(self) -> dict:
+        return self.coordinator.contratto.get(self._pod) or {}
+
+    @property
+    def native_value(self) -> float | None:
+        return self._contratto.get("impegnata")
+
+    @property
+    def extra_state_attributes(self):
+        return {"potenza_disponibile": self._contratto.get("disponibile")}

@@ -185,6 +185,15 @@
       },
       "spesa_mese": {
         "name": "Month spending"
+      },
+      "picco_giorno_potenza": {
+        "name": "Last day power peak"
+      },
+      "picco_mese_potenza": {
+        "name": "Month power peak"
+      },
+      "potenza_impegnata": {
+        "name": "Contract power"
       }
     }
   },

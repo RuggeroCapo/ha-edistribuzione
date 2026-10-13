@@ -92,7 +92,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from . import fasce, raw_storage
+from . import fasce, potenza, raw_storage
 from .const import DIREZIONI_CON_FASCE, DOMAIN, MAGNITUDE_IMMESSA, MAGNITUDE_PRELEVATA
 
 _LOGGER = logging.getLogger(__name__)
@@ -121,6 +121,12 @@ def statistic_id_costo(pod: str) -> str:
     """Cost (EUR) of the consumption of this POD, see costi.py."""
     slug = re.sub(r"[^a-z0-9_]", "_", pod.lower())
     return f"{DOMAIN}:{slug}_costo"
+
+
+def statistic_id_potenza(pod: str) -> str:
+    """Hourly mean/min/max of the 15-minute average power drawn, see potenza.py."""
+    slug = re.sub(r"[^a-z0-9_]", "_", pod.lower())
+    return f"{DOMAIN}:{slug}_potenza"
 
 
 def statistic_ids_fasce(pod: str) -> dict[str, str]:
@@ -165,6 +171,28 @@ def _metadata_costo(statistic_id: str, nome: str) -> dict:
         "unit_of_measurement": "EUR",
         "unit_class": None,
     }
+
+
+def _scrivi_potenza(
+    hass: HomeAssistant, pod: str, campioni: list[tuple[datetime, float]], nome: str
+) -> None:
+    async_add_external_statistics(
+        hass,
+        {
+            "has_mean": True,
+            "mean_type": StatisticMeanType.ARITHMETIC,
+            "has_sum": False,
+            "name": nome,
+            "source": DOMAIN,
+            "statistic_id": statistic_id_potenza(pod),
+            "unit_of_measurement": "kW",
+            "unit_class": "power",
+        },
+        [
+            {"start": ora, "mean": media, "min": minimo, "max": massimo}
+            for ora, media, minimo, massimo in potenza.ore_potenza(campioni)
+        ],
+    )
 
 
 def async_scrivi_costi(
@@ -282,6 +310,9 @@ async def async_import_curva_giornaliera(
                 ),
                 _serie_cumulativa(ore_fascia),
             )
+    if direzione == MAGNITUDE_PRELEVATA:
+        # Same full recompute: the power series follows corrections too.
+        _scrivi_potenza(hass, pod, tutti_campioni, f"{nome_serie} kW")
     ultima_data = dt_util.as_local(stats[-1]["start"]).date()
     _LOGGER.info(
         "POD %s (%s): serie ricalcolata da raw_storage, %d ore totali, ultimo punto %s",

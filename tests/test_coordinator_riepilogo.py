@@ -101,6 +101,7 @@ async def test_il_ciclo_automatico_restituisce_il_riepilogo(hass, make_edist_coo
     values stay those of the last imported day."""
     coordinator = make_edist_coordinator(pods=[POD_A])
     coordinator._async_ensure_token = AsyncMock()
+    coordinator._async_aggiorna_contratto = AsyncMock()
     with (
         patch.object(coordinator, "_prossima_richiesta", AsyncMock(return_value=None)),
         patch.object(

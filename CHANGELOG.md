@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 (fork)
+### Added
+- Power peaks: "Last day power peak" and "Month power peak" sensors (15-minute
+  average, with time, band and share of the available power), a "Contract
+  power" sensor read from E-Distribuzione, and an hourly mean/min/max power
+  statistic per POD.
+
 ## 0.8.0 (fork)
 ### Added
 - Energy costs: set your offer (single price or per F1/F2/F3 band, other

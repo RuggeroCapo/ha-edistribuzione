@@ -37,7 +37,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from . import costi, raw_storage
+from . import costi, potenza, raw_storage
 from .api import ApiClient, ApiError
 from .auth import AccessoBloccato, AppBloccata, AuthClient, AuthError, TokenNonValido
 from .const import (
@@ -186,6 +186,10 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         # series is rewritten only when the fingerprint changes, not every hour.
         self._costi_calcolati: dict[str, tuple[tuple, dict | None]] = {}
         self._costi_puliti: set[str] = set()
+        # Per POD: {"impegnata": kW, "disponibile": kW} from getSupplies, read
+        # once a day (see _async_aggiorna_contratto).
+        self.contratto: dict[str, dict[str, float | None]] = {}
+        self._contratto_letto_il: date | None = None
         session = async_get_clientsession(hass)
         self._auth = AuthClient(session)
         self._api = ApiClient(session, access_token="")
@@ -330,12 +334,52 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                 continue
             riepilogo[pod] = _riepilogo_pod(ultima_data, ultimi_giorni)
             try:
+                campioni_mese = await self.hass.async_add_executor_job(
+                    raw_storage.campioni_mese_ultimo_giorno,
+                    db_path,
+                    pod,
+                    MAGNITUDE_PRELEVATA,
+                    FUSO_ITALIA,
+                )
+                disponibile = (self.contratto.get(pod) or {}).get("disponibile")
+                riepilogo[pod]["potenza"] = potenza.riepilogo(campioni_mese, disponibile)
+            except Exception:  # noqa: BLE001 - diagnostics only, never fail an update
+                _LOGGER.exception("POD %s: picchi di potenza non aggiornati", pod)
+                riepilogo[pod]["potenza"] = (self.riepilogo.get(pod) or {}).get("potenza")
+            try:
                 riepilogo[pod]["costi"] = await self._async_aggiorna_costi(pod, db_path)
             except Exception:  # noqa: BLE001 - costs are an extra, never fail an update
                 _LOGGER.exception("POD %s: costi non aggiornati", pod)
                 riepilogo[pod]["costi"] = (self.riepilogo.get(pod) or {}).get("costi")
         self.riepilogo = riepilogo
         return riepilogo
+
+    async def _async_aggiorna_contratto(self) -> None:
+        """Contract and available power of every POD, from getSupplies, at
+        most once a day: they change only with a contract change. A failure
+        keeps the previous values and is retried on the next cycle."""
+        oggi = dt_util.now().date()
+        if self._contratto_letto_il == oggi:
+            return
+        try:
+            forniture = await self._api.async_get_supplies()
+        except Exception:  # noqa: BLE001 - an extra, never fail an update
+            _LOGGER.warning("Potenza contrattuale non letta da getSupplies", exc_info=True)
+            return
+
+        def _kw(valore) -> float | None:
+            try:
+                return float(valore) if valore is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        for fornitura in forniture:
+            if fornitura.get("IdPod") in self.pods:
+                self.contratto[fornitura["IdPod"]] = {
+                    "impegnata": _kw(fornitura.get("ContractualPower")),
+                    "disponibile": _kw(fornitura.get("AvailablePower")),
+                }
+        self._contratto_letto_il = oggi
 
     async def _async_aggiorna_costi(self, pod: str, db_path: str) -> dict | None:
         """Rewrite the POD's cost series when samples or tariff changed, and
@@ -625,6 +669,7 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
 
     async def _async_update_data(self) -> dict:
         await self._async_ensure_token()
+        await self._async_aggiorna_contratto()
 
         for pod in self.pods:
             richiesta = await self._prossima_richiesta(pod)

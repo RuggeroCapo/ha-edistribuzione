@@ -354,6 +354,25 @@ With an offer set, for every exchange POD the integration:
 The same prices apply to the whole history: changing them recomputes past
 costs too. Choosing **None** removes the cost statistic and its link.
 
+## Power peaks
+
+For every POD the integration reads the **contract power** and the
+**available power** (usually 10% more) from E-Distribuzione once a day, and
+computes the peaks from the 15-minute curve:
+
+- **Last day power peak** and **Month power peak** sensors, in kW, with when
+  it happened, the ARERA band and the share of the available power
+  (`percentuale_disponibile`);
+- the external statistic `edistribuzione:<pod>_potenza`: hourly mean, min and
+  max of the 15-minute averages, to chart in a *Statistics graph* card.
+
+A sample is the energy of 15 minutes, so these are 15-minute averages, the
+same quantity the meter uses for its monthly peaks. Instantaneous spikes, like
+an appliance starting, are higher and are not in this data.
+
+The contract power is also the default of the committed power in the costs
+form.
+
 ## F1 / F2 / F3 time bands
 
 For the **consumption** direction the integration also writes three

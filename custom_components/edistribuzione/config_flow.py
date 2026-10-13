@@ -331,11 +331,23 @@ class EdistribuzioneOptionsFlow(config_entries.OptionsFlow):
         schema |= {
             vol.Required("extra_kwh", default=attuale.get("extra_kwh", 0.0)): prezzo,
             vol.Required("quota_fissa_mese", default=attuale.get("quota_fissa_mese", 0.0)): numero(0.01, "€/mese"),
-            vol.Required("potenza_kw", default=attuale.get("potenza_kw", 3.0)): numero(0.5, "kW", 100),
+            vol.Required(
+                "potenza_kw", default=attuale.get("potenza_kw", self._potenza_contratto())
+            ): numero(0.5, "kW", 100),
             vol.Required("quota_potenza", default=attuale.get("quota_potenza", 0.0)): numero("any", "€/kW/mese"),
             vol.Required("iva", default=attuale.get("iva", 10.0)): numero(1, "%", 100),
         }
         return self.async_show_form(step_id="costi_prezzi", data_schema=vol.Schema(schema))
+
+    def _potenza_contratto(self) -> float:
+        """Contract power read from E-Distribuzione for the first POD, as the
+        default of the costs form; 3 kW (the most common) if not known yet."""
+        coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        for pod in self.config_entry.data.get(CONF_PODS, []):
+            impegnata = (getattr(coordinator, "contratto", {}).get(pod) or {}).get("impegnata")
+            if impegnata:
+                return impegnata
+        return 3.0
 
     async def _salva_opzioni(self, opzioni: dict):
         """Apply the options and reload, so sensors and the cost series
