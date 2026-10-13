@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/fabioscarparo/HomeAssistant-EDistribuzione?label=Release&color=5CC300"></a>
+  <a href="https://github.com/RuggeroCapo/ha-edistribuzione/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/RuggeroCapo/ha-edistribuzione?label=Release&color=5CC300"></a>
   <a href="https://hacs.xyz/"><img alt="HACS Custom" src="https://img.shields.io/badge/HACS-Custom-41BDF5?logo=homeassistantcommunitystore&logoColor=fff"></a>
   <a href="https://www.home-assistant.io/"><img alt="Home Assistant 2025.4+" src="https://img.shields.io/badge/Home_Assistant-2025.4%2B-18BCF2?logo=homeassistant&logoColor=fff"></a>
   <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=fff"></a>
@@ -31,6 +31,89 @@ Each POD has a configurable role:
 
 The role only changes how entities and statistics are named. **Both
 directions are always downloaded for every POD**, whatever its role.
+
+This fork adds a [browser-based login](#about-this-fork) (no credentials in
+Home Assistant), [energy costs](#energy-costs) and [power peaks](#power-peaks).
+
+## Showcase
+
+A dashboard built only from what this integration provides, for a household
+meter with a single-rate offer and a 3 kW contract. The YAML is in
+[docs/examples/dashboard-showcase.yaml](docs/examples/dashboard-showcase.yaml).
+
+> [!NOTE]
+> The screenshots show **sample data**: they were taken from a real
+> installation and then edited, so consumption, costs and meter code are
+> not the real ones.
+
+**Overview**: month spending, yesterday's cost and consumption, month power
+peak against the available power, last 30 days of consumption and cost.
+
+![Overview: month spending, yesterday's cost, month power peak gauge, daily consumption and cost](docs/images/showcase-panoramica.jpg)
+
+**Months and bill**: consumption by ARERA band and estimated bill per month.
+
+![Monthly consumption by F1/F2/F3 band and monthly cost estimate](docs/images/showcase-mesi.jpg)
+
+**Power**: contract power, monthly peaks and the last week hour by hour
+(mean and max of the 15-minute averages).
+
+![Contract power, monthly power peaks, hourly power of the last week](docs/images/showcase-potenza.jpg)
+
+**Energy Dashboard**, with the cost linked automatically, and the bundled POD
+card:
+
+![Energy Dashboard cards with consumption and cost](docs/images/showcase-energia.jpg)
+![POD card with the month split by time band](docs/images/showcase-card-pod.jpg)
+
+### Checked against a real bill
+
+On a real meter, the September 2026 bill against what the integration
+computed from the 15-minute curve, with the prices taken from the same bill:
+
+| | Difference from the bill |
+|---|---|
+| Consumption | 0.03% (the bill rounds to whole kWh) |
+| F1 / F2 / F3 split | under 0.5 kWh per band |
+| Total, VAT included (TV licence excluded) | €0.02 |
+| Monthly power peak | within 0.01 kW, every month March to September |
+
+Where each costs field comes from, on the detail page of an Italian bill:
+
+| Costs field | From the bill |
+|---|---|
+| Energy price | *Prezzo Luce* + *CdispD* |
+| Other costs per kWh | transport, UC3, UC6, ARIM, ASOS, excise (*Imposta Erariale*) |
+| Fixed monthly fee | commercial fee (*Spese commerciali*) + fixed transport share |
+| Power fee | power transport share + UC6 per kW |
+| VAT | 10% for households |
+
+### Example automation
+
+A notification when the month's peak gets close to the available power, read
+from the `percentuale_disponibile` attribute of the **Month power peak**
+sensor:
+
+```yaml
+alias: Power peak close to the limit
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.pod_it001e12345678_month_power_peak
+    attribute: percentuale_disponibile
+    above: 90
+actions:
+  - action: notify.notify
+    data:
+      message: >-
+        Power peak {{ states('sensor.pod_it001e12345678_month_power_peak') }} kW
+        ({{ state_attr('sensor.pod_it001e12345678_month_power_peak', 'fascia') }}),
+        {{ state_attr('sensor.pod_it001e12345678_month_power_peak', 'percentuale_disponibile') }}%
+        of the available power.
+mode: single
+```
+
+The data arrives with a day of delay, so this is a report on the previous
+day, not a live alarm.
 
 ---
 

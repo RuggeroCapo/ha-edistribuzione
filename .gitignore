@@ -29,3 +29,7 @@ refresh_token.txt
 # manual test.
 edistribuzione_curve.db
 edistribuzione_curve.db-*
+
+# Local, uncropped screenshots (may show personal data): the README uses
+# the cropped ones in docs/images/.
+screenshots/

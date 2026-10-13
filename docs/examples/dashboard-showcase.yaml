@@ -1,0 +1,258 @@
+# Showcase dashboard for the E-Distribuzione integration (screenshots in the README).
+# Replace it001e12345678 with your POD in lowercase, then paste it in
+# Settings > Dashboards > Add dashboard > (new dashboard) > Edit > Raw configuration editor.
+# Entity IDs may differ if the POD device has an area: check them in
+# Settings > Devices & services > E-Distribuzione.
+views:
+- title: Panoramica
+  path: panoramica
+  icon: mdi:view-dashboard
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Questo mese
+      icon: mdi:calendar-month
+      badges:
+      - type: entity
+        entity: sensor.e_distribuzione_current_time_band
+        show_state: true
+        show_icon: true
+        color: amber
+      - type: entity
+        entity: sensor.pod_it001e12345678_last_available_date
+        show_state: true
+        show_icon: true
+    - type: tile
+      entity: sensor.pod_it001e12345678_month_spending
+      name: Spesa del mese
+      icon: mdi:cash-multiple
+      color: green
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.pod_it001e12345678_last_day_cost
+      name: Costo di ieri
+      icon: mdi:currency-eur
+      color: green
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.pod_it001e12345678_last_day_consumption
+      name: Consumo di ieri
+      icon: mdi:lightning-bolt
+      color: blue
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.pod_it001e12345678_month_power_peak
+      name: Picco del mese
+      icon: mdi:flash-alert
+      color: orange
+      grid_options:
+        columns: 6
+    - type: gauge
+      entity: sensor.pod_it001e12345678_month_power_peak
+      name: Picco del mese su 3,3 kW disponibili
+      min: 0
+      max: 3.3
+      needle: true
+      severity:
+        green: 0
+        yellow: 2.4
+        red: 3
+      grid_options:
+        columns: 12
+        rows: 3
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Ultimi 30 giorni
+      icon: mdi:chart-bar
+    - type: statistics-graph
+      title: Consumo giornaliero
+      entities:
+      - entity: edistribuzione:it001e12345678_energia
+        name: Consumo
+        color: '#1e88e5'
+      days_to_show: 30
+      period: day
+      stat_types:
+      - change
+      chart_type: bar
+      grid_options:
+        columns: full
+        rows: 5
+      hide_legend: true
+    - type: statistics-graph
+      title: Costo giornaliero (IVA inclusa)
+      entities:
+      - entity: edistribuzione:it001e12345678_costo
+        name: Costo
+        color: green
+      days_to_show: 30
+      period: day
+      stat_types:
+      - change
+      chart_type: bar
+      grid_options:
+        columns: full
+        rows: 5
+      hide_legend: true
+- title: Mesi e bolletta
+  path: mesi
+  icon: mdi:receipt-text
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Consumi e costi per mese
+      icon: mdi:calendar-range
+    - type: statistics-graph
+      title: Consumo per fascia ARERA
+      entities:
+      - entity: edistribuzione:it001e12345678_energia_f1
+        name: F1
+      - entity: edistribuzione:it001e12345678_energia_f2
+        name: F2
+      - entity: edistribuzione:it001e12345678_energia_f3
+        name: F3
+      days_to_show: 240
+      period: month
+      stat_types:
+      - change
+      chart_type: bar
+      grid_options:
+        columns: full
+        rows: 6
+    - type: statistics-graph
+      title: Stima della bolletta (IVA inclusa)
+      entities:
+      - entity: edistribuzione:it001e12345678_costo
+        name: Costo
+        color: green
+      days_to_show: 240
+      period: month
+      stat_types:
+      - change
+      chart_type: bar
+      grid_options:
+        columns: full
+        rows: 6
+      hide_legend: true
+  - type: grid
+    cards:
+    - type: heading
+      heading: Tariffa configurata
+      icon: mdi:tag-text
+    - type: markdown
+      content: 'Offerta **monoraria a prezzo fisso**, impostata da *Configura → Costi dell''energia*.
+
+
+        Scrivi qui i prezzi della tua bolletta, per ricordarli a colpo d''occhio.'
+- title: Potenza
+  path: potenza
+  icon: mdi:flash
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Contratto
+      icon: mdi:gauge
+    - type: tile
+      entity: sensor.pod_it001e12345678_contract_power
+      name: Potenza impegnata
+      icon: mdi:gauge
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.pod_it001e12345678_last_day_power_peak
+      name: Picco di ieri
+      icon: mdi:flash
+      color: orange
+      grid_options:
+        columns: 6
+    - type: tile
+      entity: sensor.pod_it001e12345678_month_power_peak
+      name: Picco del mese
+      icon: mdi:flash-alert
+      color: red
+      grid_options:
+        columns: 12
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Picchi (media su 15 minuti)
+      icon: mdi:chart-line
+    - type: statistics-graph
+      title: Picco mensile
+      entities:
+      - entity: edistribuzione:it001e12345678_potenza
+        name: Picco
+        color: red
+      days_to_show: 240
+      period: month
+      stat_types:
+      - max
+      chart_type: bar
+      grid_options:
+        columns: full
+        rows: 5
+      hide_legend: true
+    - type: statistics-graph
+      title: Ultima settimana, ora per ora
+      entities:
+      - entity: edistribuzione:it001e12345678_potenza
+        name: Potenza
+      days_to_show: 7
+      period: hour
+      stat_types:
+      - mean
+      - max
+      chart_type: line
+      grid_options:
+        columns: full
+        rows: 5
+- title: Energia
+  path: energia
+  icon: mdi:lightning-bolt-circle
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Dashboard Energia
+      icon: mdi:lightning-bolt-circle
+    - type: energy-date-selection
+      grid_options:
+        columns: full
+    - type: energy-usage-graph
+      grid_options:
+        columns: full
+        rows: 6
+    - type: energy-sources-table
+      grid_options:
+        columns: full
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Card POD inclusa nell'integrazione
+      icon: mdi:card-text
+    - type: custom:edistribuzione-pod-card
+      name: Casa
+      period: month
+      show_injection: false
+      grid_options:
+        columns: full

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 (fork)
+### Added
+- Showcase dashboard (docs/examples/dashboard-showcase.yaml), screenshots and
+  a check against a real bill in the README.
+
 ## 0.9.0 (fork)
 ### Added
 - Power peaks: "Last day power peak" and "Month power peak" sensors (15-minute
