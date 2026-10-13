@@ -9,9 +9,9 @@
   ],
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/fabioscarparo/HomeAssistant-EDistribuzione",
+  "documentation": "https://github.com/RuggeroCapo/ha-edistribuzione",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues",
+  "issue_tracker": "https://github.com/RuggeroCapo/ha-edistribuzione/issues",
   "requirements": [],
-  "version": "0.7.0"
+  "version": "0.7.1"
 }

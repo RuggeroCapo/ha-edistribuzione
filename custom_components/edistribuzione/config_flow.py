@@ -1,11 +1,12 @@
 """edistribuzione config flow.
 
-Setup flow: user (email+password) -> otp -> pod (multi-select among the
-account's PODs). Reauth: the same user/otp steps (told apart by an internal
-branch on self._reauth_entry), without going back to choosing the PODs - only
-the existing entry's refresh_token is updated.
+Setup flow: user (open the authorization link in your own browser, log in
+there, paste back the eneldist://redirect URL) -> pod (multi-select among the
+account's PODs). Reauth: the same user step (told apart by an internal branch
+on self._reauth_entry), without going back to choosing the PODs - only the
+existing entry's refresh_token is updated.
 
-No distributor or municipality selection: a single distributor, a single flow.
+Home Assistant never receives the password or the OTP: see auth.py.
 """
 from __future__ import annotations
 
@@ -17,25 +18,18 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import selector
-from homeassistant.helpers.aiohttp_client import (
-    async_create_clientsession,
-    async_get_clientsession,
-)
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import ApiClient
 from .auth import (
     AccessoBloccato,
-    AccountBloccato,
     AppBloccata,
     AuthClient,
-    ErroreTecnicoPortale,
-    InvalidCredentials,
-    InvalidOtp,
-    LoginRifiutato,
+    AutorizzazioneNegata,
     ParsingError,
-    PasswordScaduta,
+    StateNonCorrispondente,
     TokenNonValido,
-    TroppeSessioni,
+    UrlRedirectNonValido,
 )
 from .const import (
     CONF_ORA_RICHIESTA,
@@ -52,24 +46,9 @@ from .testi import testo
 
 _LOGGER = logging.getLogger(__name__)
 
-# The OTP code is Optional (not Required) because the same form also serves to
-# request a new code without having one to enter: whoever received nothing ticks
-# the box and submits the empty form.
-STEP_OTP_SCHEMA = vol.Schema({
-    vol.Optional("otp", default=""): str,
-    vol.Optional("richiedi_nuovo_codice", default=False): bool,
-})
+CONF_URL_REDIRECT = "url_redirect"
 
-
-# Error of the user step for each kind of login refusal. Each one also shows
-# the portal's own message ({messaggio}): an unknown refusal still says what
-# E-Distribuzione answered (see auth.LoginRifiutato).
-_ERRORI_RIFIUTO_LOGIN: dict[type[LoginRifiutato], str] = {
-    InvalidCredentials: "invalid_auth",
-    ErroreTecnicoPortale: "errore_tecnico_portale",
-    AccountBloccato: "account_bloccato",
-    PasswordScaduta: "password_scaduta",
-}
+STEP_USER_SCHEMA = vol.Schema({vol.Required(CONF_URL_REDIRECT): str})
 
 
 def _descrivi_eccezione(err: Exception) -> str:
@@ -98,7 +77,6 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        self._session = None
         self._auth: AuthClient | None = None
         self._access_token: str | None = None
         self._refresh_token: str | None = None
@@ -110,174 +88,54 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return testo(self.hass.config.language, chiave, **segnaposto)
 
     # ------------------------------------------------------------------
-    # Login email/password -> OTP
+    # Login in the browser -> pasted redirect URL
     # ------------------------------------------------------------------
-
-    async def _reinvia_otp(self) -> tuple[str | None, str | None]:
-        """Request a new OTP within the current login session.
-
-        It is the only way to get a code valid for Home Assistant when the first
-        one does not arrive: an OTP generated on the website or in the app
-        belongs to another login session and cannot be validated here. Returns
-        (error_key, notice) to pass to the form.
-        """
-        try:
-            confermato = await self._auth.async_resend_otp()
-        except TroppeSessioni:
-            _LOGGER.warning("Reinvio OTP rifiutato: troppe sessioni aperte sull'account")
-            return "troppe_sessioni", None
-        except AccessoBloccato:
-            _LOGGER.warning("Reinvio OTP: E-Distribuzione ha risposto con la verifica antibot")
-            return "accesso_bloccato", None
-        except Exception:  # noqa: BLE001 - see comment in async_step_user
-            _LOGGER.exception("Reinvio del codice OTP fallito")
-            return "cannot_connect", None
-        return None, self._testo("otp_reinviato" if confermato else "otp_invio_non_confermato")
-
-    def _form_otp(self, errors: dict[str, str], avviso: str):
-        return self.async_show_form(
-            step_id="otp",
-            data_schema=STEP_OTP_SCHEMA,
-            errors=errors,
-            description_placeholders={"avviso": avviso},
-        )
-
-    async def _otp_senza_codice(self, user_input: dict[str, Any], avviso: str):
-        """Handle OTP form submits that carry no code to validate: a request for
-        a new code, or an empty field.
-
-        Returns the form to show, or None if there is a code and we can proceed
-        with async_submit_otp.
-        """
-        if user_input.get("richiedi_nuovo_codice"):
-            errore, avviso_reinvio = await self._reinvia_otp()
-            return self._form_otp({"base": errore} if errore else {}, avviso_reinvio or avviso)
-        if not user_input.get("otp"):
-            return self._form_otp({"base": "otp_mancante"}, avviso)
-        return None
-
-    def _avviso_iniziale(self) -> str:
-        """Notice to show the first time the OTP form is reached: flags the case
-        where the portal did not confirm that the code was sent (otherwise the
-        user would wait for an OTP that never arrives, with nothing telling
-        them)."""
-        if getattr(self._auth, "otp_invio_confermato", None) is False:
-            return self._testo("otp_invio_non_confermato")
-        return self._testo("otp_solo_da_qui")
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
         messaggio = ""
 
-        if user_input is not None:
-            # Dedicated session (not Home Assistant's shared one): this login
-            # goes through a Salesforce redirect chain that depends on a session
-            # cookie set halfway through, which the shared session does not
-            # reliably persist for this domain - the symptom is an infinite
-            # redirect loop because the server never sees the cookie come back.
-            # Created once and reused across retries of this same flow.
-            if self._session is None:
-                self._session = async_create_clientsession(self.hass)
-            self._auth = AuthClient(self._session)
+        # One AuthClient (hence one PKCE pair and one link) for the whole
+        # flow: a failed paste does not invalidate the link already opened.
+        if self._auth is None:
+            self._auth = AuthClient(async_get_clientsession(self.hass))
+        link = self._auth.crea_link_autorizzazione()
 
+        if user_input is not None:
             try:
-                # A space copied along with the address is never part of it.
-                await self._auth.async_begin_login(
-                    user_input["email"].strip(), user_input["password"]
+                tokens = await self._auth.async_scambia_url_redirect(
+                    user_input[CONF_URL_REDIRECT]
                 )
-            except LoginRifiutato as err:
-                errors["base"] = _ERRORI_RIFIUTO_LOGIN.get(type(err), "login_rifiutato")
-                messaggio = err.messaggio
-            except TroppeSessioni:
-                # Right credentials, but the account has too many open sessions:
-                # no OTP is sent, so there is no point moving to the next step to
-                # ask for it.
-                _LOGGER.warning("Login rifiutato: troppe sessioni aperte sull'account")
-                errors["base"] = "troppe_sessioni"
+            except UrlRedirectNonValido:
+                errors["base"] = "url_non_valido"
+            except StateNonCorrispondente:
+                errors["base"] = "state_diverso"
+            except AutorizzazioneNegata as err:
+                errors["base"] = "autorizzazione_negata"
+                messaggio = str(err)
+            except TokenNonValido:
+                # The code is single-use and lasts a few minutes: a new login
+                # with the same link gives a fresh one.
+                errors["base"] = "codice_scaduto"
             except AccessoBloccato:
-                # Before ParsingError: the anti-bot page does not contain the
-                # expected fields, but the problem is not a markup change.
-                _LOGGER.warning("Login: E-Distribuzione ha risposto con la verifica antibot")
+                _LOGGER.warning("Scambio del codice: E-Distribuzione ha risposto con la verifica antibot")
                 errors["base"] = "accesso_bloccato"
             except AppBloccata as err:
-                _LOGGER.warning("Login: E-Distribuzione blocca il client OAuth (%s)", err)
+                _LOGGER.warning("Scambio del codice: E-Distribuzione blocca il client OAuth (%s)", err)
                 errors["base"] = "app_bloccata"
             except ParsingError as err:
-                # A page or answer different from the expected one: maintenance,
-                # or a change on the portal. Not the credentials.
-                _LOGGER.exception("Parsing della pagina di login fallito")
+                _LOGGER.exception("Risposta inattesa dal token endpoint")
                 errors["base"] = "risposta_inattesa"
                 messaggio = _descrivi_eccezione(err)
             except (aiohttp.ClientError, TimeoutError):
-                _LOGGER.exception("E-Distribuzione non raggiungibile durante il login")
+                _LOGGER.exception("E-Distribuzione non raggiungibile durante lo scambio del codice")
                 errors["base"] = "cannot_connect"
             except Exception as err:  # noqa: BLE001 - any other unexpected error
-                # Anything auth.py does not wrap in its dedicated exceptions:
-                # better an error in the form (with the traceback in the logs)
+                # Better an error in the form (with the traceback in the logs)
                 # than blowing up the step.
-                _LOGGER.exception("Errore imprevisto durante il login")
+                _LOGGER.exception("Errore imprevisto durante lo scambio del codice")
                 errors["base"] = "errore_imprevisto"
                 messaggio = _descrivi_eccezione(err)
-            else:
-                return await self.async_step_otp()
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema({vol.Required("email"): str, vol.Required("password"): str}),
-            errors=errors,
-            description_placeholders={
-                "pod_correnti": self._nota_reauth(),
-                "messaggio": messaggio,
-            },
-        )
-
-    def _nota_reauth(self) -> str:
-        """Extra sentence shown only during a reauth, to recall which PODs will
-        be re-authenticated - empty during the initial setup."""
-        if self._reauth_entry is None:
-            return ""
-        pods = ", ".join(self._reauth_entry.data.get(CONF_PODS, []))
-        return self._testo("nota_reauth", pods=pods)
-
-    async def async_step_otp(self, user_input: dict[str, Any] | None = None):
-        errors: dict[str, str] = {}
-        avviso = self._avviso_iniziale()
-
-        if user_input is not None:
-            form_senza_codice = await self._otp_senza_codice(user_input, avviso)
-            if form_senza_codice is not None:
-                return form_senza_codice
-
-            # Checked here, before using up an attempt on the portal: the code
-            # is made of digits only, often pasted with spaces in between.
-            codice = user_input["otp"].replace(" ", "")
-            if not codice.isdigit():
-                return self._form_otp({"base": "otp_formato"}, avviso)
-
-            try:
-                tokens = await self._auth.async_submit_otp(codice)
-            except InvalidOtp:
-                errors["base"] = "invalid_otp"
-            except TroppeSessioni:
-                errors["base"] = "troppe_sessioni"
-            except AccessoBloccato:
-                _LOGGER.warning("Convalida OTP: E-Distribuzione ha risposto con la verifica antibot")
-                return self.async_abort(reason="accesso_bloccato")
-            except AppBloccata as err:
-                _LOGGER.warning("Convalida OTP: E-Distribuzione blocca il client OAuth (%s)", err)
-                return self.async_abort(reason="app_bloccata")
-            except ParsingError:
-                # At this point the OTP has already been accepted by Salesforce
-                # (otherwise we would have caught InvalidOtp above): the failure
-                # is in parsing a later step, not in the code entered. Showing
-                # the OTP form again does not help - the OTP is single-use and
-                # the ViewState has already advanced, a retry with the same code
-                # would fail again the same way.
-                _LOGGER.exception("Parsing della pagina OTP fallito")
-                return self.async_abort(reason="otp_exchange_failed")
-            except Exception:  # noqa: BLE001 - see comment in async_step_user
-                _LOGGER.exception("Errore imprevisto durante lo scambio del codice OTP")
-                return self.async_abort(reason="otp_exchange_failed")
             else:
                 self._access_token = tokens.access_token
                 self._refresh_token = tokens.refresh_token
@@ -293,7 +151,24 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="reauth_successful")
                 return await self.async_step_pod()
 
-        return self._form_otp(errors, avviso)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=STEP_USER_SCHEMA,
+            errors=errors,
+            description_placeholders={
+                "link": link,
+                "pod_correnti": self._nota_reauth(),
+                "messaggio": messaggio,
+            },
+        )
+
+    def _nota_reauth(self) -> str:
+        """Extra sentence shown only during a reauth, to recall which PODs will
+        be re-authenticated - empty during the initial setup."""
+        if self._reauth_entry is None:
+            return ""
+        pods = ", ".join(self._reauth_entry.data.get(CONF_PODS, []))
+        return self._testo("nota_reauth", pods=pods)
 
     # ------------------------------------------------------------------
     # POD selection (initial setup only, not reauth)
@@ -307,9 +182,8 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 self._pods_disponibili = await api.async_get_supplies()
             except Exception:  # noqa: BLE001 - see comment in async_step_user
-                # Login and OTP already succeeded: an OTP is single-use, so a
-                # retry of this step would not fix anything without redoing
-                # login+OTP from scratch.
+                # The code was already exchanged: it is single-use, so a retry
+                # of this step would not fix anything without logging in again.
                 _LOGGER.exception("Errore imprevisto nel recupero dei POD")
                 return self.async_abort(reason="supplies_failed")
 
@@ -349,7 +223,7 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         })
 
     # ------------------------------------------------------------------
-    # Reauth: same login+OTP, no POD selection
+    # Reauth: same browser login, no POD selection
     # ------------------------------------------------------------------
 
     async def async_step_reauth(self, entry_data: dict[str, Any]):

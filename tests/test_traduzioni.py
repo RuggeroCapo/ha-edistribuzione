@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from homeassistant.helpers.translation import async_get_translations
 
-from custom_components.edistribuzione import config_flow, sensor, testi
+from custom_components.edistribuzione import sensor, testi
 from custom_components.edistribuzione.const import DOMAIN, TIPO_POD_PRODUZIONE, TIPO_POD_SCAMBIO
 
 CARTELLA = Path(__file__).parent.parent / "custom_components" / DOMAIN
@@ -83,7 +83,6 @@ def test_ogni_errore_e_motivo_dei_flussi_esiste():
     usate = set(re.findall(r'errors\["base"\] = "(\w+)"', sorgente))
     usate |= set(re.findall(r'"base": "(\w+)"', sorgente))
     usate |= set(re.findall(r'reason="(\w+)"', sorgente))
-    usate |= set(config_flow._ERRORI_RIFIUTO_LOGIN.values()) | {"login_rifiutato"}
     it = _carica("it")
     definite = (
         set(it["config"]["error"])
@@ -91,7 +90,7 @@ def test_ogni_errore_e_motivo_dei_flussi_esiste():
         | set(it["options"]["error"])
         | set(it["options"]["abort"])
     )
-    assert len(usate) > 20, "regex to update: too few keys found in config_flow.py"
+    assert len(usate) > 15, "regex to update: too few keys found in config_flow.py"
     assert usate <= definite, usate - definite
 
 

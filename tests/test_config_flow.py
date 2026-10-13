@@ -1,5 +1,5 @@
-"""Config flow: login/OTP/POD, options flow (POD role, add/remove POD,
-request time) and reauth.
+"""Config flow: browser login (pasted redirect URL), POD selection, options
+flow (POD role, add/remove POD, request time) and reauth.
 
 Everything that touches the network is replaced: the AuthClient / ApiClient
 clients and the aiohttp sessions. No ARERA/municipality wizard (a single
@@ -20,16 +20,12 @@ from custom_components.edistribuzione import auth as edist_auth
 from custom_components.edistribuzione import config_flow as cf
 from custom_components.edistribuzione.auth import (
     AccessoBloccato,
-    AccountBloccato,
     AppBloccata,
-    ErroreTecnicoPortale,
-    InvalidCredentials,
-    InvalidOtp,
-    LoginRifiutato,
+    AutorizzazioneNegata,
     ParsingError,
-    PasswordScaduta,
+    StateNonCorrispondente,
     TokenNonValido,
-    TroppeSessioni,
+    UrlRedirectNonValido,
 )
 from custom_components.edistribuzione.const import (
     CONF_ORA_RICHIESTA,
@@ -54,12 +50,10 @@ def _mock_setup_entry():
 @pytest.fixture
 def edist_mocks(monkeypatch):
     """Replaces AuthClient / ApiClient and the aiohttp sessions. Default:
-    login and OTP succeed, a single POD on the account."""
+    the pasted URL is exchanged, a single POD on the account."""
     auth = Mock()
-    auth.async_begin_login = AsyncMock(return_value=None)
-    auth.otp_invio_confermato = True
-    auth.async_resend_otp = AsyncMock(return_value=True)
-    auth.async_submit_otp = AsyncMock(
+    auth.crea_link_autorizzazione = Mock(return_value="https://link-di-accesso")
+    auth.async_scambia_url_redirect = AsyncMock(
         return_value=SimpleNamespace(access_token="acc", refresh_token="ref-nuovo")
     )
     auth.async_refresh_access_token = AsyncMock(
@@ -72,7 +66,6 @@ def edist_mocks(monkeypatch):
     monkeypatch.setattr(edist_api, "ApiClient", Mock(return_value=api))
     monkeypatch.setattr(cf, "AuthClient", Mock(return_value=auth))
     monkeypatch.setattr(cf, "ApiClient", Mock(return_value=api))
-    monkeypatch.setattr(cf, "async_create_clientsession", lambda *a, **k: Mock())
     monkeypatch.setattr(cf, "async_get_clientsession", lambda *a, **k: Mock())
     return SimpleNamespace(auth=auth, api=api)
 
@@ -81,230 +74,81 @@ async def _fino_a_user(hass):
     return await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
 
 
-# --- login -> OTP -----------------------------------------------------------
+# --- login in the browser -> pasted redirect URL ---------------------------
+
+REDIRECT = "eneldist://redirect?code=abc&state=xyz"
 
 
-async def test_credenziali_non_valide(hass, edist_mocks):
-    edist_mocks.auth.async_begin_login.side_effect = InvalidCredentials("no")
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    assert res["type"] == FlowResultType.FORM
-    assert res["step_id"] == "user"
-    assert res["errors"] == {"base": "invalid_auth"}
-
-
-async def test_login_bloccato_dalla_verifica_antibot(hass, edist_mocks):
-    edist_mocks.auth.async_begin_login.side_effect = AccessoBloccato("antibot")
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    assert res["type"] == FlowResultType.FORM
-    assert res["step_id"] == "user"
-    assert res["errors"] == {"base": "accesso_bloccato"}
-
-
-async def test_convalida_otp_bloccata_dalla_verifica_antibot(hass, edist_mocks):
-    """The OTP is single-use: with access blocked the flow stops with a clear
-    reason, as for the other errors after validation."""
-    edist_mocks.auth.async_submit_otp.side_effect = AccessoBloccato("antibot")
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "12345"})
-    assert res["type"] == FlowResultType.ABORT
-    assert res["reason"] == "accesso_bloccato"
-
-
-async def _login_con_errore(hass, edist_mocks, errore):
-    edist_mocks.auth.async_begin_login.side_effect = errore
-    res = await _fino_a_user(hass)
+async def _incolla(hass, res, testo=REDIRECT):
     return await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
+        res["flow_id"], {cf.CONF_URL_REDIRECT: testo}
     )
 
 
-async def test_pagina_login_cambiata(hass, edist_mocks):
-    """An unexpected answer from the portal is neither a connection nor a
-    credentials problem: it has its own message, with the technical detail."""
-    res = await _login_con_errore(hass, edist_mocks, ParsingError("markup"))
-    assert res["errors"] == {"base": "risposta_inattesa"}
-    assert "markup" in res["description_placeholders"]["messaggio"]
-
-
-@pytest.mark.parametrize(
-    ("eccezione", "chiave"),
-    [
-        (InvalidCredentials, "invalid_auth"),
-        (ErroreTecnicoPortale, "errore_tecnico_portale"),
-        (AccountBloccato, "account_bloccato"),
-        (PasswordScaduta, "password_scaduta"),
-        (LoginRifiutato, "login_rifiutato"),
-    ],
-)
-async def test_ogni_rifiuto_mostra_il_suo_errore_e_il_messaggio_del_portale(
-    hass, edist_mocks, eccezione, chiave
-):
-    """Issues #3, #5, #6: with the right credentials "invalid email or
-    password" showed up. Now every refusal has its own error, always with
-    E-Distribuzione's exact message."""
-    res = await _login_con_errore(hass, edist_mocks, eccezione("Testo del portale"))
+async def test_il_form_mostra_il_link_di_accesso(hass, edist_mocks):
+    res = await _fino_a_user(hass)
     assert res["type"] == FlowResultType.FORM
     assert res["step_id"] == "user"
-    assert res["errors"] == {"base": chiave}
-    assert res["description_placeholders"]["messaggio"] == "Testo del portale"
+    assert res["description_placeholders"]["link"] == "https://link-di-accesso"
+
+
+async def test_il_link_resta_lo_stesso_dopo_un_errore(hass, edist_mocks):
+    """One AuthClient per flow: a wrong paste does not invalidate the link
+    the user already opened."""
+    edist_mocks.auth.async_scambia_url_redirect.side_effect = UrlRedirectNonValido("no")
+    res = await _fino_a_user(hass)
+    res = await _incolla(hass, res, "testo a caso")
+    assert res["errors"] == {"base": "url_non_valido"}
+    assert cf.AuthClient.call_count == 1
+
+
+async def test_l_url_incollato_arriva_all_auth_client(hass, edist_mocks):
+    res = await _fino_a_user(hass)
+    await _incolla(hass, res)
+    edist_mocks.auth.async_scambia_url_redirect.assert_awaited_once_with(REDIRECT)
 
 
 @pytest.mark.parametrize(
     ("errore", "chiave"),
     [
-        (aiohttp.ClientConnectionError("dns"), "cannot_connect"),
-        (TimeoutError(), "cannot_connect"),
+        (UrlRedirectNonValido("no"), "url_non_valido"),
+        (StateNonCorrispondente("no"), "state_diverso"),
+        (AutorizzazioneNegata("access_denied", None), "autorizzazione_negata"),
+        (TokenNonValido("invalid_grant"), "codice_scaduto"),
+        (AccessoBloccato("antibot"), "accesso_bloccato"),
         (AppBloccata("app_blocked"), "app_bloccata"),
+        (ParsingError("html"), "risposta_inattesa"),
+        (aiohttp.ClientError("rete"), "cannot_connect"),
         (RuntimeError("boom"), "errore_imprevisto"),
     ],
 )
-async def test_errori_di_rete_blocco_e_imprevisti_restano_distinti(
-    hass, edist_mocks, errore, chiave
-):
-    res = await _login_con_errore(hass, edist_mocks, errore)
+async def test_ogni_errore_resta_sul_form(hass, edist_mocks, errore, chiave):
+    edist_mocks.auth.async_scambia_url_redirect.side_effect = errore
+    res = await _fino_a_user(hass)
+    res = await _incolla(hass, res)
+    assert res["type"] == FlowResultType.FORM
+    assert res["step_id"] == "user"
     assert res["errors"] == {"base": chiave}
 
 
-async def test_l_errore_imprevisto_dice_cosa_e_successo(hass, edist_mocks):
-    res = await _login_con_errore(hass, edist_mocks, RuntimeError("boom"))
-    assert res["description_placeholders"]["messaggio"] == "RuntimeError: boom"
-
-
-async def test_spazi_attorno_all_email_vengono_tolti(hass, edist_mocks):
-    res = await _fino_a_user(hass)
-    await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": " a@b.it ", "password": " x "}
-    )
-    # The password stays as it is: a space may be part of it.
-    edist_mocks.auth.async_begin_login.assert_awaited_once_with("a@b.it", " x ")
-
-
-async def test_otp_con_lettere_non_viene_inviato(hass, edist_mocks):
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "12a45"})
-    assert res["step_id"] == "otp"
-    assert res["errors"] == {"base": "otp_formato"}
-    edist_mocks.auth.async_submit_otp.assert_not_called()
-
-
-async def test_otp_con_spazi_viene_ripulito(hass, edist_mocks):
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": " 12 345 "})
-    edist_mocks.auth.async_submit_otp.assert_awaited_once_with("12345")
-
-
-async def test_app_bloccata_dopo_l_otp_interrompe_con_un_motivo_chiaro(hass, edist_mocks):
-    edist_mocks.auth.async_submit_otp.side_effect = AppBloccata("app_blocked")
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "12345"})
-    assert res["type"] == FlowResultType.ABORT
-    assert res["reason"] == "app_bloccata"
-
-
-async def test_troppe_sessioni_al_login(hass, edist_mocks):
-    """Right credentials but an account with too many open sessions: in this
-    state E-Distribuzione sends no OTP, so the flow must stop on the
-    credentials form, not move on to ask for a code that will not arrive."""
-    edist_mocks.auth.async_begin_login.side_effect = TroppeSessioni(
-        "Hai superato il numero di sessioni simultanee consentite"
+async def test_autorizzazione_negata_mostra_il_motivo(hass, edist_mocks):
+    edist_mocks.auth.async_scambia_url_redirect.side_effect = AutorizzazioneNegata(
+        "access_denied", "end-user denied"
     )
     res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    assert res["type"] == FlowResultType.FORM
-    assert res["step_id"] == "user"
-    assert res["errors"] == {"base": "troppe_sessioni"}
+    res = await _incolla(hass, res)
+    assert "end-user denied" in res["description_placeholders"]["messaggio"]
 
 
-async def test_otp_non_valido(hass, edist_mocks):
-    edist_mocks.auth.async_submit_otp.side_effect = InvalidOtp("nope")
+async def test_dopo_un_errore_si_puo_riprovare(hass, edist_mocks):
+    edist_mocks.auth.async_scambia_url_redirect.side_effect = [
+        TokenNonValido("scaduto"),
+        SimpleNamespace(access_token="acc", refresh_token="ref-nuovo"),
+    ]
     res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    assert res["step_id"] == "otp"
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "000000"})
-    assert res["errors"] == {"base": "invalid_otp"}
-
-
-async def test_otp_form_vuoto_chiede_il_codice(hass, edist_mocks):
-    """The OTP field is Optional (so a new code can be requested with the
-    field empty): with no code and no tick, the form shows again with an
-    error instead of trying to validate an empty string."""
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": ""})
-    assert res["step_id"] == "otp"
-    assert res["errors"] == {"base": "otp_mancante"}
-    edist_mocks.auth.async_submit_otp.assert_not_called()
-
-
-async def test_richiesta_nuovo_otp(hass, edist_mocks):
-    hass.config.language = "it"
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"otp": "", "richiedi_nuovo_codice": True}
-    )
-    edist_mocks.auth.async_resend_otp.assert_awaited_once()
-    edist_mocks.auth.async_submit_otp.assert_not_called()
-    assert res["step_id"] == "otp"
-    assert res["errors"] == {}
-    assert "nuovo codice" in res["description_placeholders"]["avviso"]
-
-
-@pytest.mark.parametrize(
-    ("lingua", "atteso"),
-    [("it", "non ha confermato"), ("en", "did not confirm"), ("de", "did not confirm")],
-)
-async def test_avviso_se_invio_otp_non_confermato(hass, edist_mocks, lingua, atteso):
-    """The notice is a description_placeholder, which HA does not
-    translate: it follows the server language, with English for the
-    unsupported ones."""
-    hass.config.language = lingua
-    edist_mocks.auth.otp_invio_confermato = False
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    assert res["step_id"] == "otp"
-    assert atteso in res["description_placeholders"]["avviso"]
-
-
-async def test_otp_parsing_fallito_abortisce(hass, edist_mocks):
-    """The OTP was already accepted but a later step fails: the flow aborts
-    instead of asking for the same (single-use) OTP again."""
-    edist_mocks.auth.async_submit_otp.side_effect = ParsingError("consent page")
-    res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "123456"})
-    assert res["type"] == FlowResultType.ABORT
-    assert res["reason"] == "otp_exchange_failed"
+    res = await _incolla(hass, res)
+    res = await _incolla(hass, res)
+    assert res["type"] == FlowResultType.CREATE_ENTRY
 
 
 # --- POD selection ----------------------------------------------------------
@@ -312,10 +156,7 @@ async def test_otp_parsing_fallito_abortisce(hass, edist_mocks):
 
 async def test_un_solo_pod_crea_entry_subito(hass, edist_mocks):
     res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "123456"})
+    res = await _incolla(hass, res)
     assert res["type"] == FlowResultType.CREATE_ENTRY
     assert res["data"][CONF_PODS] == ["IT001E00000009"]
     assert res["data"][CONF_REFRESH_TOKEN] == "ref-nuovo"
@@ -324,10 +165,7 @@ async def test_un_solo_pod_crea_entry_subito(hass, edist_mocks):
 async def test_nessun_pod_sull_account_abortisce(hass, edist_mocks):
     edist_mocks.api.async_get_supplies.return_value = []
     res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "123456"})
+    res = await _incolla(hass, res)
     assert res["type"] == FlowResultType.ABORT
     assert res["reason"] == "no_pods_found"
 
@@ -335,10 +173,7 @@ async def test_nessun_pod_sull_account_abortisce(hass, edist_mocks):
 async def test_recupero_pod_fallito_abortisce(hass, edist_mocks):
     edist_mocks.api.async_get_supplies.side_effect = RuntimeError("boom")
     res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "123456"})
+    res = await _incolla(hass, res)
     assert res["type"] == FlowResultType.ABORT
     assert res["reason"] == "supplies_failed"
 
@@ -349,10 +184,7 @@ async def test_piu_pod_si_scelgono(hass, edist_mocks):
         {"IdPod": "IT001E00000010"},
     ]
     res = await _fino_a_user(hass)
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "123456"})
+    res = await _incolla(hass, res)
     assert res["step_id"] == "pod"
 
     res = await hass.config_entries.flow.async_configure(
@@ -381,10 +213,7 @@ async def test_reauth_aggiorna_refresh_token(hass, edist_mocks):
         DOMAIN, context={"source": "reauth", "entry_id": entry.entry_id}, data=entry.data
     )
     assert res["step_id"] == "user"
-    res = await hass.config_entries.flow.async_configure(
-        res["flow_id"], {"email": "a@b.it", "password": "x"}
-    )
-    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"otp": "123456"})
+    res = await _incolla(hass, res)
     assert res["type"] == FlowResultType.ABORT
     assert res["reason"] == "reauth_successful"
     assert entry.data[CONF_REFRESH_TOKEN] == "ref-nuovo"

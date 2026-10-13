@@ -34,52 +34,44 @@ directions are always downloaded for every POD**, whatever its role.
 
 ---
 
+## About this fork
+
+Fork of
+[fabioscarparo/HomeAssistant-EDistribuzione](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione)
+with one change: **the login happens in your own browser**. Home Assistant
+never receives your email, password or OTP code, and no longer scrapes the
+portal's login pages. It only builds a standard OAuth2 + PKCE link and
+exchanges the code you paste back for a `refresh_token`, the only credential
+it keeps.
+
+The only hosts contacted are `private.e-distribuzione.it` /
+`edistribuzione.my.site.com` (OAuth token endpoint) and
+`xs-misura-p.de-c1.eu1.cloudhub.io` (meter data). The `refresh_token` is stored,
+like every integration's credentials, in plain text in
+`.storage/core.config_entries` and in Home Assistant backups: protect them
+accordingly.
+
 ## Installation
 
 ### Requirements
 
-- **Home Assistant 2025.4** or later, with [HACS](https://hacs.xyz)
-  installed; the integration's icon shows from Home Assistant 2026.3
-- The **email and password** of your E-Distribuzione customer area
-- Access to the email address or phone number where the OTP code arrives
-
-> [!IMPORTANT]
-> Log out of the official E-Distribuzione app and website before setting up
-> the integration. E-Distribuzione limits the number of concurrent sessions
-> per account, and with too many open it sends no OTP code.
+- **Home Assistant 2025.4** or later; the integration's icon shows from
+  Home Assistant 2026.3
+- An E-Distribuzione customer area account (the grid operator, not your
+  energy supplier) and a desktop browser with developer tools
 
 ### Install with HACS
 
-The integration is not in the default HACS store: add it as a custom
-repository.
-
 1. Open **HACS**, then **⋮ → Custom repositories**.
-2. Add `https://github.com/fabioscarparo/HomeAssistant-EDistribuzione` with
-   type **Integration**.
-3. Search for **E-Distribuzione**, open it and select **Download**. HACS
-   installs the latest release and lets you know when a new one is out.
-4. Restart Home Assistant: **Settings → System**, power icon (top right) →
-   **Restart Home Assistant**. You can also use the **Restart required**
-   notice in **Settings → Repairs**.
-
-See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+2. Add `https://github.com/RuggeroCapo/ha-edistribuzione` with type
+   **Integration**.
+3. Search for **E-Distribuzione**, open it and select **Download**, then
+   restart Home Assistant.
 
 ### Manual installation
 
 Copy `custom_components/edistribuzione/` into the `custom_components/`
 folder of your Home Assistant configuration, then restart Home Assistant.
-
-### Migrating from maurobraggio's repository
-
-If you are coming from
-[maurobraggio/HomeAssistant-EDistribuzione](https://github.com/maurobraggio/HomeAssistant-EDistribuzione):
-
-1. Remove **only the repository** from HACS.
-2. Do **not** remove the integration from **Settings → Devices & services**.
-3. Add this repository following the steps above.
-
-The integration domain is the same, so the existing setup and data are
-kept.
 
 ## Setup
 
@@ -87,44 +79,48 @@ kept.
 
 1. Go to **Settings → Devices & services → Add integration** and search for
    **E-Distribuzione**. If it does not appear, reload the page.
-2. Enter the email and password of your customer area.
-3. Enter the OTP code you receive by email or SMS.
+2. Log in to the
+   [E-Distribuzione customer area](https://private.e-distribuzione.it/PortaleClienti/s/)
+   as usual (email, password, OTP) and stay on that tab.
+3. In the **same tab**, open the link shown in the form. With the session
+   already active it goes straight to the consent page ("Consentire
+   l'accesso?"): press **Consenti**.
+4. The page stays blank. The portal hands the code to the official app with
+   a JavaScript call to `eneldist://redirect?code=...`, which the browser
+   silently ignores. Press F12, open **Console** and run:
+
+   ```js
+   copy(document.documentElement.outerHTML.match(/eneldist:\/\/redirect\?[^'"<\s]+/)[0])
+   ```
+
+   (Chrome may ask you to type `allow pasting` first). The address is now in
+   your clipboard: paste it into the form.
 
 > [!NOTE]
-> Only use the code that arrives after submitting your credentials here.
-> Codes generated in the E-Distribuzione app or on the website belong to a
-> different login session and are always rejected.
+> Opening the link *before* logging in does not work: after the OTP the
+> portal's login page drops the OAuth request and lands on its home page.
 
-- **No OTP code?** Tick **Request a new code**, leave the code field empty
-  and submit the form.
-- **Too many concurrent sessions?** Log out of the official app and website,
-  wait a few minutes and try again.
+The code is single-use and valid for a few minutes. If it expires, open the
+link again from step 3: it stays valid for the whole setup.
 
 ### If the sign-in fails
 
-When E-Distribuzione refuses the sign-in, the form quotes its own message
-and says whether your credentials are the problem:
-
 | Message | What to do |
 |---|---|
-| **E-Distribuzione rejected the email or password** | Use the credentials of the E-Distribuzione customer area, the grid operator, not those of your energy supplier (for example Enel Energia): they are two different accounts. |
-| **Generic technical error** | Not a credentials problem: the portal did not check them. Try again later; if the website shows the same error, contact E-Distribuzione. |
-| **Account locked or disabled**, **password expired** | Fix it on the official website, then sign in here again. |
-| **Blocking automated access** (anti-bot check) | Not a credentials problem. Try again later, without insisting. |
-| **Rejecting the official app's client** (`app_blocked`) | E-Distribuzione is refusing the client the integration signs in with. Not a credentials problem: try again later. |
-| **Unexpected answer** | The portal may be under maintenance or may have changed. If it keeps happening, open an issue with the log. |
+| **No `eneldist://redirect` address** | Copy the whole address, from `eneldist://` to the end of the code. |
+| **Comes from another login link** | You used a link from an earlier attempt: use the one on the current page. |
+| **Expired or already used** | Open the link again (step 3) and paste the new address right away. |
+| **Did not authorize access** | Open the link again and choose **Consenti** on the consent page. |
+| **Blocking automated requests** (anti-bot check) | Not a credentials problem. Try again later, without insisting. |
+| **Rejecting the official app's client** (`app_blocked`) | E-Distribuzione is refusing the client the integration uses. Try again later. |
 | **Cannot reach E-Distribuzione** | Check Home Assistant's internet connection and DNS. |
 
 Installations already set up show the two blocks in **Settings → Repairs**
 and resume on their own, retrying once an hour, as soon as access works
-again. **Do not remove the integration to set it up again while a block
-lasts**: the new sign-in is refused too. If access expires instead (for
-example after a password change), Home Assistant asks you to sign in again
-from **Settings → Devices & services**, keeping PODs, options and history.
-
-Other problems, or ideas? Please report them in the
-[issues](https://github.com/fabioscarparo/HomeAssistant-EDistribuzione/issues),
-quoting the message shown.
+again. If access expires instead (for example after a password change),
+Home Assistant asks you to sign in again from **Settings → Devices &
+services**, with the same browser procedure, keeping PODs, options and
+history.
 
 ### 2. Select the PODs
 
@@ -502,15 +498,13 @@ running `recupera_storico` by hand.
 Before trusting the data, you can check the login and data protocol with:
 
 ```bash
-pip install -r requirements_test.txt
+pip install aiohttp
 python scripts/verify_login.py
 ```
 
-The script logs in (email, password and OTP), lists the account's PODs and
-probes several `magnitude` candidates on the data endpoint, comparing the
-totals to find out which one returns injected energy. If a candidate turns
-out to be correct, update **only** `MAGNITUDE_IMMESSA` in
-`custom_components/edistribuzione/const.py`.
+The script prints the same authorization link as the setup form, exchanges
+the `eneldist://redirect` address you paste back, lists the account's PODs and
+the last 7 days of consumption of the first one. Nothing is written to disk.
 
 ## Development
 

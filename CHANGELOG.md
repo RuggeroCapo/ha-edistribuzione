@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.1 (fork)
+### Changed
+- Sign-in happens in your own browser: the setup shows an OAuth link and you
+  paste back the `eneldist://redirect` address. Home Assistant no longer
+  receives email, password or OTP, and no longer scrapes the portal's pages.
+- `scripts/verify_login.py` uses the same browser sign-in and writes nothing
+  to disk.
+
+### Removed
+- Email/password and OTP steps, and the debug HTML dumps they wrote to disk.
+
 ## 0.7.0
 ### Added
 - Current time band sensor.
