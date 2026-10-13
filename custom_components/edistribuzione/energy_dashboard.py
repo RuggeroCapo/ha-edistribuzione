@@ -16,6 +16,7 @@ times.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from homeassistant.components.energy.data import (
     EnergyPreferencesUpdate,
@@ -25,8 +26,11 @@ from homeassistant.components.energy.data import (
 from homeassistant.core import HomeAssistant
 
 from .const import TIPO_POD_PRODUZIONE
-from .coordinator import EdistribuzioneCoordinator
-from .statistics import statistic_ids
+from .statistics import statistic_id_costo, statistic_ids
+
+if TYPE_CHECKING:
+    # Type only: the coordinator imports this module to link the costs.
+    from .coordinator import EdistribuzioneCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,7 +78,7 @@ async def async_configura_energy_dashboard(
                     "type": "grid",
                     "stat_energy_from": prelevata,
                     "stat_energy_to": immessa,
-                    "stat_cost": None,
+                    "stat_cost": statistic_id_costo(pod) if coordinator.ha_costi(pod) else None,
                     "entity_energy_price": None,
                     "number_energy_price": None,
                     "stat_compensation": None,
@@ -97,3 +101,42 @@ async def async_configura_energy_dashboard(
     await manager.async_update(update)
     _LOGGER.info("Energy Dashboard: aggiunte le sorgenti per %s", ", ".join(aggiunte))
     return aggiunte
+
+
+def _ha_un_costo(sorgente: dict) -> bool:
+    return any(
+        sorgente.get(campo)
+        for campo in ("stat_cost", "entity_energy_price", "number_energy_price")
+    )
+
+
+async def async_collega_costo(hass: HomeAssistant, pod: str, *, attivo: bool) -> bool:
+    """Link (attivo=True) or unlink the POD's cost statistic on its grid source.
+
+    Never overrides a cost the user set by hand (another statistic, a price
+    entity or a fixed price): it only fills an empty one, and only removes its
+    own. Returns True if the preferences changed."""
+    manager = await async_get_manager(hass)
+    if not manager.data:
+        return False
+    prelevata, _ = statistic_ids(pod)
+    costo = statistic_id_costo(pod)
+
+    sorgenti: list[SourceType] = list(manager.data["energy_sources"])
+    cambiato = False
+    for i, sorgente in enumerate(sorgenti):
+        if sorgente.get("type") != "grid" or sorgente.get("stat_energy_from") != prelevata:
+            continue
+        if attivo and not _ha_un_costo(sorgente):
+            sorgenti[i] = {**sorgente, "stat_cost": costo}
+            cambiato = True
+        elif not attivo and sorgente.get("stat_cost") == costo:
+            sorgenti[i] = {**sorgente, "stat_cost": None}
+            cambiato = True
+
+    if cambiato:
+        await manager.async_update({"energy_sources": sorgenti})
+        _LOGGER.info(
+            "Energy Dashboard: costo del POD %s %s", pod, "collegato" if attivo else "scollegato"
+        )
+    return cambiato

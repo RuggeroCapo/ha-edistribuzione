@@ -38,6 +38,7 @@ def _coord(riepilogo=None, pods=(POD,), tipo_pod=TIPO_POD_DEFAULT, lingua="it"):
         pods=list(pods),
         entry=None,
         tipo_pod=lambda pod: tipo_pod,
+        ha_costi=lambda pod: False,
         lingua=lingua,
     )
 
@@ -126,6 +127,7 @@ async def test_build_entities_conta_account_piu_tre_per_pod(hass):
         pods=[POD, "IT002"],
         entry=entry,
         tipo_pod=lambda pod: TIPO_POD_DEFAULT,
+        ha_costi=lambda pod: False,
         lingua="it",
     )
     entità = s.build_entities(hass, coord)

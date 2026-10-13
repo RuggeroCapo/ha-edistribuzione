@@ -226,7 +226,7 @@ async def test_opzioni_menu(hass):
     entry = _entry_edist(hass)
     res = await hass.config_entries.options.async_init(entry.entry_id)
     assert res["type"] == FlowResultType.MENU
-    assert set(res["menu_options"]) == {"tipo_pod", "aggiungi_pod", "rimuovi_pod", "orario"}
+    assert set(res["menu_options"]) == {"tipo_pod", "costi", "aggiungi_pod", "rimuovi_pod", "orario"}
 
 
 async def test_opzioni_orario_salva_valore(hass):
@@ -359,3 +359,55 @@ async def test_opzioni_rimuovi_pod(hass):
     )
     assert res["type"] == FlowResultType.CREATE_ENTRY
     assert entry.data[CONF_PODS] == ["IT001E00000009"]
+
+
+# --- costs ---------------------------------------------------------------------
+
+
+async def _apri_costi(hass, entry):
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    return await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "costi"}
+    )
+
+
+async def test_opzioni_costi_monoraria(hass):
+    entry = _entry_edist(hass)
+    res = await _apri_costi(hass, entry)
+    assert res["step_id"] == "costi"
+    res = await hass.config_entries.options.async_configure(res["flow_id"], {"tipo": "monoraria"})
+    assert res["step_id"] == "costi_prezzi"
+    campi = {str(k) for k in res["data_schema"].schema}
+    assert "prezzo" in campi and "prezzo_f1" not in campi
+
+    prezzi = {
+        "prezzo": 0.12,
+        "extra_kwh": 0.05,
+        "quota_fissa_mese": 7.0,
+        "potenza_kw": 3.0,
+        "quota_potenza": 1.8,
+        "iva": 10.0,
+    }
+    res = await hass.config_entries.options.async_configure(res["flow_id"], prezzi)
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.options[cf.CONF_TARIFFA] == {"tipo": "monoraria", **prezzi}
+
+
+async def test_opzioni_costi_fasce_chiede_tre_prezzi(hass):
+    entry = _entry_edist(hass)
+    res = await _apri_costi(hass, entry)
+    res = await hass.config_entries.options.async_configure(res["flow_id"], {"tipo": "fasce"})
+    campi = {str(k) for k in res["data_schema"].schema}
+    assert {"prezzo_f1", "prezzo_f2", "prezzo_f3"} <= campi and "prezzo" not in campi
+
+
+async def test_opzioni_costi_nessuna_toglie_la_tariffa_e_tiene_il_resto(hass):
+    entry = _entry_edist(
+        hass,
+        options={cf.CONF_TARIFFA: {"tipo": "monoraria", "prezzo": 0.1}, CONF_ORA_RICHIESTA: 20},
+    )
+    res = await _apri_costi(hass, entry)
+    res = await hass.config_entries.options.async_configure(res["flow_id"], {"tipo": "nessuna"})
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert cf.CONF_TARIFFA not in entry.options
+    assert entry.options[CONF_ORA_RICHIESTA] == 20

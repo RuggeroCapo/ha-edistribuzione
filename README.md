@@ -326,6 +326,34 @@ Self-consumption and total home consumption are calculated by Home
 Assistant from production, injection and grid consumption: no extra sensors
 are needed.
 
+## Energy costs
+
+Set your offer in **Settings → Devices & services → E-Distribuzione →
+Configure → Energy costs**:
+
+| Field | Meaning |
+|---|---|
+| Kind of offer | **Single fixed price**, **fixed price per band** (F1/F2/F3), or **None** to turn costs off |
+| Energy price | EUR/kWh excluding VAT, one or one per band |
+| Other costs per kWh | Transport, system charges and excise not included in the offer price; 0 if already included |
+| Fixed monthly fee | Commercial fee and fixed transport share, EUR/month |
+| Committed power, power fee | kW and EUR/kW/month |
+| VAT | Percent, applied to everything (10% for households) |
+
+With an offer set, for every exchange POD the integration:
+
+- writes the external statistic `edistribuzione:<pod>_costo` (EUR, VAT
+  included), with the same hours as the consumption series; the fixed fees are
+  spread evenly over the hours of each month, so a full month adds exactly one
+  monthly fee;
+- links it as the cost of the POD's grid source in the Energy Dashboard,
+  unless you already set a cost there by hand;
+- adds the **Last day cost** and **Month spending** sensors (month up to the
+  last day with data).
+
+The same prices apply to the whole history: changing them recomputes past
+costs too. Choosing **None** removes the cost statistic and its link.
+
 ## F1 / F2 / F3 time bands
 
 For the **consumption** direction the integration also writes three

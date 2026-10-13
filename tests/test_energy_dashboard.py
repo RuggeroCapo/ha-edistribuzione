@@ -24,6 +24,9 @@ class _CoordinatorFinto:
     def tipo_pod(self, pod: str) -> str:
         return self._ruoli.get(pod, TIPO_POD_SCAMBIO)
 
+    def ha_costi(self, pod: str) -> bool:
+        return False
+
 
 async def test_aggiunge_grid_per_scambio_e_solar_per_produzione(hass):
     coordinator = _CoordinatorFinto(
@@ -116,3 +119,33 @@ async def test_piu_pod_sullo_stesso_coordinator(hass):
     assert len(aggiunte) == 2
     manager = await async_get_manager(hass)
     assert len(manager.data["energy_sources"]) == 2
+
+
+async def test_collega_il_costo_solo_se_la_sorgente_non_ne_ha_uno(hass):
+    from custom_components.edistribuzione.energy_dashboard import async_collega_costo
+    from custom_components.edistribuzione.statistics import statistic_id_costo
+
+    await async_configura_energy_dashboard(hass, [_CoordinatorFinto(["IT001"], {})])
+    assert await async_collega_costo(hass, "IT001", attivo=True)
+    manager = await async_get_manager(hass)
+    (sorgente,) = manager.data["energy_sources"]
+    assert sorgente["stat_cost"] == statistic_id_costo("IT001")
+
+    # Already linked: nothing to change; then unlinked again.
+    assert not await async_collega_costo(hass, "IT001", attivo=True)
+    assert await async_collega_costo(hass, "IT001", attivo=False)
+    (sorgente,) = manager.data["energy_sources"]
+    assert sorgente["stat_cost"] is None
+
+
+async def test_non_sovrascrive_un_prezzo_messo_a_mano(hass):
+    from custom_components.edistribuzione.energy_dashboard import async_collega_costo
+
+    await async_configura_energy_dashboard(hass, [_CoordinatorFinto(["IT001"], {})])
+    manager = await async_get_manager(hass)
+    (sorgente,) = manager.data["energy_sources"]
+    await manager.async_update({"energy_sources": [{**sorgente, "number_energy_price": 0.3}]})
+
+    assert not await async_collega_costo(hass, "IT001", attivo=True)
+    (sorgente,) = manager.data["energy_sources"]
+    assert sorgente["stat_cost"] is None

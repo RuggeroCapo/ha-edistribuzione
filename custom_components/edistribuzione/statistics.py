@@ -117,6 +117,12 @@ def statistic_ids(pod: str) -> tuple[str, str]:
     return _sanitize_statistic_id(pod), _sanitize_statistic_id(pod, immessa=True)
 
 
+def statistic_id_costo(pod: str) -> str:
+    """Cost (EUR) of the consumption of this POD, see costi.py."""
+    slug = re.sub(r"[^a-z0-9_]", "_", pod.lower())
+    return f"{DOMAIN}:{slug}_costo"
+
+
 def statistic_ids_fasce(pod: str) -> dict[str, str]:
     """{band: statistic_id} of the per-band consumption series."""
     return {f: _sanitize_statistic_id(pod, fascia=f) for f in fasce.FASCE}
@@ -146,6 +152,29 @@ def _metadata(statistic_id: str, nome: str) -> dict:
         "unit_of_measurement": "kWh",
         "unit_class": "energy",
     }
+
+
+def _metadata_costo(statistic_id: str, nome: str) -> dict:
+    return {
+        "has_mean": False,
+        "mean_type": StatisticMeanType.NONE,
+        "has_sum": True,
+        "name": nome,
+        "source": DOMAIN,
+        "statistic_id": statistic_id,
+        "unit_of_measurement": "EUR",
+        "unit_class": None,
+    }
+
+
+def async_scrivi_costi(
+    hass: HomeAssistant, pod: str, ore: list[tuple[datetime, float]], nome: str
+) -> None:
+    """Write the whole hourly cost series of a POD (see costi.costi_orari),
+    recomputed from scratch like the energy series."""
+    async_add_external_statistics(
+        hass, _metadata_costo(statistic_id_costo(pod), nome), _serie_cumulativa(ore)
+    )
 
 
 def _aggrega_ore(campioni: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:

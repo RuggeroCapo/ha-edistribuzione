@@ -75,6 +75,7 @@ DIREZIONI_CON_FASCE = (MAGNITUDE_PRELEVATA,)
 CONF_PODS = "pods"  # list of POD codes, all on the same authenticated account
 CONF_REFRESH_TOKEN = "refresh_token"
 
+CONF_TARIFFA = "tariffa"  # dict in entry.options, see costi.Tariffa.da_opzioni
 CONF_TIPO_POD = "tipo_pod"  # {pod: "scambio"|"produzione"}, in entry.options
 TIPO_POD_SCAMBIO = "scambio"
 TIPO_POD_PRODUZIONE = "produzione"

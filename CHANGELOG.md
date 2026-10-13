@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 (fork)
+### Added
+- Energy costs: set your offer (single price or per F1/F2/F3 band, other
+  per-kWh costs, fixed and power fees, VAT) in the options. The integration
+  writes a EUR cost statistic per POD, links it in the Energy Dashboard and
+  adds the "Last day cost" and "Month spending" sensors.
+
 ## 0.7.1 (fork)
 ### Changed
 - Sign-in happens in your own browser: the setup shows an OAuth link and you

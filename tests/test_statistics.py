@@ -379,3 +379,16 @@ async def test_rettifica_si_propaga_anche_alle_fasce(recorder_mock, hass):
     ora_10 = _ora("2026-08-03T08:00:00+00:00")
     assert f1[ora_10]["state"] == pytest.approx(0.3)
     assert f1[ora_10]["sum"] == pytest.approx(0.3)
+
+
+async def test_serie_dei_costi_in_euro(recorder_mock, hass):
+    from datetime import UTC
+    from datetime import datetime as dt
+
+    pod = "IT001E00000020"
+    ore = [(dt(2026, 10, 14, 10, tzinfo=UTC), 0.5), (dt(2026, 10, 14, 11, tzinfo=UTC), 0.25)]
+    st.async_scrivi_costi(hass, pod, ore, "costo")
+    await async_recorder_block_till_done(hass)
+
+    righe = await _leggi_statistiche(hass, st.statistic_id_costo(pod))
+    assert [righe[k]["sum"] for k in sorted(righe)] == [0.5, 0.75]

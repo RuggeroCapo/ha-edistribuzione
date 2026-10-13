@@ -42,7 +42,8 @@
           "tipo_pod": "Meter type per POD",
           "aggiungi_pod": "Add POD",
           "rimuovi_pod": "Remove POD",
-          "orario": "Request time"
+          "orario": "Request time",
+          "costi": "Energy costs"
         }
       },
       "tipo_pod": {
@@ -68,6 +69,34 @@
         "description": "Local hour (0-23) from which to request the previous day's curve. Current: {ora_attuale}:00.",
         "data": {
           "ora_richiesta": "Hour"
+        }
+      },
+      "costi": {
+        "title": "Energy costs",
+        "description": "Choose your supplier's kind of offer (see your bill or the supplier's app). With an offer set, the integration computes the cost of your consumption, links it to the Energy Dashboard and adds the «Last day cost» and «Month spending» sensors. Choose «None» to turn costs off.",
+        "data": {
+          "tipo": "Kind of offer"
+        }
+      },
+      "costi_prezzi": {
+        "title": "Offer prices",
+        "description": "Prices excluding VAT, as on the bill. They apply to the whole history: if you change offer, past costs are recomputed too.",
+        "data": {
+          "prezzo": "Energy price",
+          "prezzo_f1": "F1 price",
+          "prezzo_f2": "F2 price",
+          "prezzo_f3": "F3 price",
+          "extra_kwh": "Other costs per kWh (transport, system charges, excise)",
+          "quota_fissa_mese": "Fixed monthly fee",
+          "potenza_kw": "Committed power",
+          "quota_potenza": "Power fee",
+          "iva": "VAT"
+        },
+        "data_description": {
+          "extra_kwh": "Bill items that grow with the kWh but are not part of the offer price. Leave 0 if the offer price already includes them.",
+          "quota_fissa_mese": "Commercial fee and fixed transport share, in euro per month.",
+          "quota_potenza": "Euro per kW per month, multiplied by the committed power.",
+          "iva": "10% for households."
         }
       }
     },
@@ -150,6 +179,12 @@
             "name": "Day"
           }
         }
+      },
+      "costo_ultimo_giorno": {
+        "name": "Last day cost"
+      },
+      "spesa_mese": {
+        "name": "Month spending"
       }
     }
   },
@@ -158,6 +193,13 @@
       "options": {
         "scambio": "Regular / exchange meter",
         "produzione": "Solar / production meter"
+      }
+    },
+    "tipo_tariffa": {
+      "options": {
+        "nessuna": "None (costs off)",
+        "monoraria": "Single fixed price",
+        "fasce": "Fixed price per band (F1/F2/F3)"
       }
     }
   },

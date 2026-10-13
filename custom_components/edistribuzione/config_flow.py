@@ -35,6 +35,7 @@ from .const import (
     CONF_ORA_RICHIESTA,
     CONF_PODS,
     CONF_REFRESH_TOKEN,
+    CONF_TARIFFA,
     CONF_TIPO_POD,
     DOMAIN,
     ORA_MINIMA_RICHIESTA,
@@ -42,6 +43,7 @@ from .const import (
     TIPO_POD_PRODUZIONE,
     TIPO_POD_SCAMBIO,
 )
+from .costi import TIPI_TARIFFA, TIPO_FASCE
 from .testi import testo
 
 _LOGGER = logging.getLogger(__name__)
@@ -238,13 +240,18 @@ class EdistribuzioneConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return EdistribuzioneOptionsFlow()
 
 
+TIPO_NESSUNA = "nessuna"
+
+
 class EdistribuzioneOptionsFlow(config_entries.OptionsFlow):
-    """POD role, add/remove POD, request time - after the initial setup."""
+    """POD role, costs, add/remove POD, request time - after the initial setup."""
+
+    _tipo_tariffa: str = TIPO_NESSUNA
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["tipo_pod", "aggiungi_pod", "rimuovi_pod", "orario"],
+            menu_options=["tipo_pod", "costi", "aggiungi_pod", "rimuovi_pod", "orario"],
         )
 
     async def async_step_tipo_pod(self, user_input: dict[str, Any] | None = None):
@@ -275,6 +282,67 @@ class EdistribuzioneOptionsFlow(config_entries.OptionsFlow):
             for pod in pods
         }
         return self.async_show_form(step_id="tipo_pod", data_schema=vol.Schema(schema))
+
+    async def async_step_costi(self, user_input: dict[str, Any] | None = None):
+        """Kind of offer: none (costs off), single price or per band."""
+        attuale = (self.config_entry.options.get(CONF_TARIFFA) or {}).get("tipo", TIPO_NESSUNA)
+        if user_input is not None:
+            if user_input["tipo"] == TIPO_NESSUNA:
+                opzioni = {k: v for k, v in self.config_entry.options.items() if k != CONF_TARIFFA}
+                return await self._salva_opzioni(opzioni)
+            self._tipo_tariffa = user_input["tipo"]
+            return await self.async_step_costi_prezzi()
+
+        return self.async_show_form(
+            step_id="costi",
+            data_schema=vol.Schema({
+                vol.Required("tipo", default=attuale): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[TIPO_NESSUNA, *TIPI_TARIFFA], translation_key="tipo_tariffa"
+                    )
+                )
+            }),
+        )
+
+    async def async_step_costi_prezzi(self, user_input: dict[str, Any] | None = None):
+        """Prices of the chosen offer, plus the parts of the bill that do not
+        depend on it (see costi.py)."""
+        tipo = self._tipo_tariffa
+        attuale = self.config_entry.options.get(CONF_TARIFFA) or {}
+        if user_input is not None:
+            tariffa = {"tipo": tipo, **user_input}
+            return await self._salva_opzioni({**self.config_entry.options, CONF_TARIFFA: tariffa})
+
+        def numero(passo: float | str, unita: str, massimo: float = 10_000) -> selector.NumberSelector:
+            return selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=massimo, step=passo, unit_of_measurement=unita,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            )
+
+        # "any": prices have up to 6 decimals, below the smallest fixed step HA accepts.
+        prezzo = numero("any", "€/kWh", 10)
+        campi_prezzo = ["prezzo_f1", "prezzo_f2", "prezzo_f3"] if tipo == TIPO_FASCE else ["prezzo"]
+        schema: dict = {
+            vol.Required(campo, default=attuale.get(campo, attuale.get("prezzo", 0.0))): prezzo
+            for campo in campi_prezzo
+        }
+        schema |= {
+            vol.Required("extra_kwh", default=attuale.get("extra_kwh", 0.0)): prezzo,
+            vol.Required("quota_fissa_mese", default=attuale.get("quota_fissa_mese", 0.0)): numero(0.01, "€/mese"),
+            vol.Required("potenza_kw", default=attuale.get("potenza_kw", 3.0)): numero(0.5, "kW", 100),
+            vol.Required("quota_potenza", default=attuale.get("quota_potenza", 0.0)): numero("any", "€/kW/mese"),
+            vol.Required("iva", default=attuale.get("iva", 10.0)): numero(1, "%", 100),
+        }
+        return self.async_show_form(step_id="costi_prezzi", data_schema=vol.Schema(schema))
+
+    async def _salva_opzioni(self, opzioni: dict):
+        """Apply the options and reload, so sensors and the cost series
+        follow at once (same pattern as async_step_tipo_pod)."""
+        self.hass.config_entries.async_update_entry(self.config_entry, options=opzioni)
+        await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+        return self.async_create_entry(title="", data=opzioni)
 
     async def async_step_orario(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:

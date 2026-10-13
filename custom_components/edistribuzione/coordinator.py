@@ -24,6 +24,7 @@ import logging
 from datetime import date, timedelta
 
 import aiohttp
+from homeassistant.components.recorder import get_instance
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import (
@@ -36,7 +37,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from . import raw_storage
+from . import costi, raw_storage
 from .api import ApiClient, ApiError
 from .auth import AccessoBloccato, AppBloccata, AuthClient, AuthError, TokenNonValido
 from .const import (
@@ -46,6 +47,7 @@ from .const import (
     CONF_ORA_RICHIESTA,
     CONF_PODS,
     CONF_REFRESH_TOKEN,
+    CONF_TARIFFA,
     CONF_TIPO_POD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
@@ -63,7 +65,12 @@ from .const import (
     TIPO_POD_PRODUZIONE,
 )
 from .fasce import FUSO_ITALIA
-from .statistics import async_get_ultima_data_disponibile, async_import_curva_giornaliera
+from .statistics import (
+    async_get_ultima_data_disponibile,
+    async_import_curva_giornaliera,
+    async_scrivi_costi,
+    statistic_id_costo,
+)
 from .testi import testo
 
 _LOGGER = logging.getLogger(__name__)
@@ -175,6 +182,10 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         self.accesso_bloccato = False
         # What the diagnostic sensors show, per POD (see async_aggiorna_riepilogo).
         self.riepilogo: dict[str, dict] = {}
+        # Per POD: (fingerprint of samples + tariff, cost summary). The cost
+        # series is rewritten only when the fingerprint changes, not every hour.
+        self._costi_calcolati: dict[str, tuple[tuple, dict | None]] = {}
+        self._costi_puliti: set[str] = set()
         session = async_get_clientsession(hass)
         self._auth = AuthClient(session)
         self._api = ApiClient(session, access_token="")
@@ -185,6 +196,16 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
         _nome_serie), never which directions are requested."""
         tipi = self.entry.options.get(CONF_TIPO_POD, {})
         return tipi.get(pod, TIPO_POD_DEFAULT)
+
+    @property
+    def tariffa(self) -> costi.Tariffa | None:
+        """Tariff set in the options (step "costi"), or None."""
+        return costi.Tariffa.da_opzioni(self.entry.options.get(CONF_TARIFFA))
+
+    def ha_costi(self, pod: str) -> bool:
+        """Costs apply to the consumption of exchange PODs only: a production
+        POD's consumption is the inverter's standby, not a bill."""
+        return self.tariffa is not None and self.tipo_pod(pod) != TIPO_POD_PRODUZIONE
 
     @property
     def lingua(self) -> str:
@@ -308,8 +329,55 @@ class EdistribuzioneCoordinator(DataUpdateCoordinator[dict]):
                 riepilogo[pod] = self.riepilogo.get(pod, {})
                 continue
             riepilogo[pod] = _riepilogo_pod(ultima_data, ultimi_giorni)
+            try:
+                riepilogo[pod]["costi"] = await self._async_aggiorna_costi(pod, db_path)
+            except Exception:  # noqa: BLE001 - costs are an extra, never fail an update
+                _LOGGER.exception("POD %s: costi non aggiornati", pod)
+                riepilogo[pod]["costi"] = (self.riepilogo.get(pod) or {}).get("costi")
         self.riepilogo = riepilogo
         return riepilogo
+
+    async def _async_aggiorna_costi(self, pod: str, db_path: str) -> dict | None:
+        """Rewrite the POD's cost series when samples or tariff changed, and
+        return the summary shown by the cost sensors (None without a tariff).
+
+        Without a tariff, a cost series left by an earlier configuration is
+        removed once, together with its link in the Energy Dashboard."""
+        from .energy_dashboard import async_collega_costo
+
+        recorder = "recorder" in self.hass.config.components
+        tariffa = self.tariffa if self.ha_costi(pod) else None
+        if tariffa is None:
+            if self._costi_calcolati.pop(pod, None) is not None or pod not in self._costi_puliti:
+                self._costi_puliti.add(pod)
+                if recorder:
+                    await async_collega_costo(self.hass, pod, attivo=False)
+                    get_instance(self.hass).async_clear_statistics([statistic_id_costo(pod)])
+            return None
+
+        campioni = await self.hass.async_add_executor_job(
+            raw_storage.leggi_campioni, db_path, pod, MAGNITUDE_PRELEVATA
+        )
+        impronta = (
+            tariffa,
+            len(campioni),
+            campioni[-1][0] if campioni else None,
+            round(sum(kwh for _, kwh in campioni), 6),
+        )
+        precedente = self._costi_calcolati.get(pod)
+        if precedente is not None and precedente[0] == impronta:
+            return precedente[1]
+
+        ore = await self.hass.async_add_executor_job(costi.costi_orari, campioni, tariffa)
+        if ore and recorder:
+            async_scrivi_costi(
+                self.hass, pod, ore, f"E-Distribuzione {pod} - {testo(self.lingua, 'serie_costo')}"
+            )
+            await async_collega_costo(self.hass, pod, attivo=True)
+        self._costi_puliti.discard(pod)
+        sintesi = costi.riepilogo(ore)
+        self._costi_calcolati[pod] = (impronta, sintesi)
+        return sintesi
 
     # ------------------------------------------------------------------
     # Configurable hour + queue of days to retry, PER POD

@@ -86,6 +86,9 @@ def build_entities(hass, coordinator: EdistribuzioneCoordinator) -> list[SensorE
         entities.append(UltimaDataDisponibileSensor(coordinator, entry, pod, id_padre))
         entities.append(ConsumoGiornoSensor(coordinator, entry, pod, id_padre, immessa=False))
         entities.append(ConsumoGiornoSensor(coordinator, entry, pod, id_padre, immessa=True))
+        if coordinator.ha_costi(pod):
+            entities.append(CostoSensor(coordinator, entry, pod, id_padre, mese=False))
+            entities.append(CostoSensor(coordinator, entry, pod, id_padre, mese=True))
     return entities
 
 
@@ -257,3 +260,44 @@ class ConsumoGiornoSensor(_SensoreRiepilogo):
     @property
     def extra_state_attributes(self):
         return {"giorno": self._ultimo_giorno.get("giorno")}
+
+
+class CostoSensor(_SensoreRiepilogo):
+    """Cost (EUR, VAT included) of the last imported day, or of its month up
+    to that day, computed with the tariff set in the options (see costi.py).
+    Not diagnostic: it is the figure to put on a dashboard. Like the kWh
+    sensors, no state_class: the history lives in the cost statistic."""
+
+    _attr_entity_category = None
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "EUR"
+    _attr_icon = "mdi:currency-eur"
+
+    def __init__(
+        self,
+        coordinator: EdistribuzioneCoordinator,
+        entry: ConfigEntry,
+        pod: str,
+        id_padre: str | None = None,
+        *,
+        mese: bool,
+    ) -> None:
+        super().__init__(coordinator, entry, pod, id_padre)
+        self._mese = mese
+        chiave = "spesa_mese" if mese else "costo_ultimo_giorno"
+        self._attr_translation_key = chiave
+        self._attr_unique_id = f"{entry.entry_id}_{pod}_{chiave}"
+
+    @property
+    def _costi(self) -> dict:
+        return self._riepilogo.get("costi") or {}
+
+    @property
+    def native_value(self) -> float | None:
+        return self._costi.get("costo_mese" if self._mese else "costo_giorno")
+
+    @property
+    def extra_state_attributes(self):
+        if self._mese:
+            return {"mese": self._costi.get("mese"), "fino_al": self._costi.get("giorno")}
+        return {"giorno": self._costi.get("giorno")}

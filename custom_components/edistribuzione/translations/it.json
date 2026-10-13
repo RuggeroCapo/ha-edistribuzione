@@ -42,7 +42,8 @@
           "tipo_pod": "Tipo di contatore per POD",
           "aggiungi_pod": "Aggiungi POD",
           "rimuovi_pod": "Rimuovi POD",
-          "orario": "Orario della richiesta"
+          "orario": "Orario della richiesta",
+          "costi": "Costi dell'energia"
         }
       },
       "tipo_pod": {
@@ -68,6 +69,34 @@
         "description": "Ora locale (0-23) a partire dalla quale chiedere la curva del giorno prima. Attuale: {ora_attuale}:00.",
         "data": {
           "ora_richiesta": "Ora"
+        }
+      },
+      "costi": {
+        "title": "Costi dell'energia",
+        "description": "Scegli il tipo di offerta del tuo fornitore (lo trovi in bolletta o nell'app). Con un'offerta configurata l'integrazione calcola il costo dei consumi, lo collega alla dashboard Energia e aggiunge i sensori «Costo ultimo giorno» e «Spesa del mese». Scegli «Nessuna» per disattivare i costi.",
+        "data": {
+          "tipo": "Tipo di offerta"
+        }
+      },
+      "costi_prezzi": {
+        "title": "Prezzi dell'offerta",
+        "description": "Prezzi IVA esclusa, come in bolletta. Valgono per tutto lo storico: se cambi offerta, anche i costi passati vengono ricalcolati.",
+        "data": {
+          "prezzo": "Prezzo dell'energia",
+          "prezzo_f1": "Prezzo F1",
+          "prezzo_f2": "Prezzo F2",
+          "prezzo_f3": "Prezzo F3",
+          "extra_kwh": "Altri costi per kWh (trasporto, oneri, accise)",
+          "quota_fissa_mese": "Quota fissa mensile",
+          "potenza_kw": "Potenza impegnata",
+          "quota_potenza": "Quota potenza",
+          "iva": "IVA"
+        },
+        "data_description": {
+          "extra_kwh": "Le voci della bolletta che crescono con i kWh ma non fanno parte del prezzo dell'offerta. Lascia 0 se il prezzo dell'offerta le comprende già.",
+          "quota_fissa_mese": "Commercializzazione e quota fissa del trasporto, in euro al mese.",
+          "quota_potenza": "Euro per kW al mese, moltiplicati per la potenza impegnata.",
+          "iva": "10% per le utenze domestiche."
         }
       }
     },
@@ -150,6 +179,12 @@
             "name": "Giorno"
           }
         }
+      },
+      "costo_ultimo_giorno": {
+        "name": "Costo ultimo giorno"
+      },
+      "spesa_mese": {
+        "name": "Spesa del mese"
       }
     }
   },
@@ -158,6 +193,13 @@
       "options": {
         "scambio": "Contatore normale / scambio",
         "produzione": "Contatore fotovoltaico / produzione"
+      }
+    },
+    "tipo_tariffa": {
+      "options": {
+        "nessuna": "Nessuna (costi disattivati)",
+        "monoraria": "Prezzo fisso unico (monoraria)",
+        "fasce": "Prezzo fisso per fasce (F1/F2/F3)"
       }
     }
   },

@@ -26,6 +26,7 @@ TESTI: dict[str, dict[str, str]] = {
         "serie_immissione": "immissione",
         "serie_produzione": "produzione",
         "serie_prelievo_tecnico": "prelievo (tecnico)",
+        "serie_costo": "costo",
         "nota_reauth": " Stai aggiornando le credenziali per i POD: {pods}.",
         "nessun_pod": "nessuno",
         "nessun_dato_pod": (
@@ -55,6 +56,7 @@ TESTI: dict[str, dict[str, str]] = {
         "serie_immissione": "return to grid",
         "serie_produzione": "production",
         "serie_prelievo_tecnico": "consumption (technical)",
+        "serie_costo": "cost",
         "nota_reauth": " You are updating the credentials for these PODs: {pods}.",
         "nessun_pod": "none",
         "nessun_dato_pod": (
